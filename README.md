@@ -6,11 +6,14 @@ ChatLens L2 viewer and cleaned-message ingestion API.
 
 - `public/ChatLens.html`: three-column ChatLens UI.
 - L2 consumes the message API contract.
-- L1 and L0 are placeholders until their backend contracts exist.
+- L1 consumes saved channel state snapshots from `/api/channel-state`.
+- L0 consumes saved research reports from `/api/reports`.
 - Channel filter, priority filter, search across loaded messages, star/archive local state, image thumbnails, lightbox, and message detail fetch are implemented.
 - `server.js`: Node HTTP server with Postgres support on Railway and an empty in-memory fallback locally.
 - `POST /api/messages`: authenticated daemon ingestion endpoint for cleaned messages.
 - `POST /api/images`: authenticated ephemeral image upload endpoint for the current deploy session.
+- `POST /api/channel-state`: authenticated L1 channel state upsert endpoint.
+- `POST /api/reports`: authenticated L0 report upsert endpoint.
 
 No mock or seed messages are bundled in the repo.
 
@@ -33,6 +36,8 @@ http://localhost:3000/ChatLens.html
 GET /api/channels
 GET /api/messages?channel_id=&priority=&limit=50&cursor=
 GET /api/messages/{external_id}
+GET /api/channel-state?channel_id=<id>&level=L1
+GET /api/reports?level=L0&channel_id=&limit=20
 ```
 
 `priority` supports `high`, `normal`, `low`, and `ignore`.
@@ -80,6 +85,97 @@ Batch:
 ```
 
 The endpoint also accepts `x-api-key: <CHATVIEW_API_KEY>`. Writes are upserts by `external_id`.
+
+## L1 Channel State API
+
+Latest channel state:
+
+```http
+GET /api/channel-state?channel_id=26929515373@chatroom&level=L1
+```
+
+Response:
+
+```json
+{
+  "state": null
+}
+```
+
+When present, `state` contains the persisted snapshot fields.
+
+Upsert state:
+
+```http
+POST /api/channel-state
+Authorization: Bearer <CHATVIEW_API_KEY>
+Content-Type: application/json
+```
+
+```json
+{
+  "channel_id": "26929515373@chatroom",
+  "level": "L1",
+  "markdown": "...",
+  "cards": [
+    {
+      "title": "资金面",
+      "body": "缩表观点继续发酵",
+      "priority": "high",
+      "message_ids": ["..."]
+    }
+  ],
+  "window_start": 1779465600,
+  "window_end": 1779469200,
+  "source_message_ids": ["..."],
+  "previous_state_id": "st_prev_or_null"
+}
+```
+
+`state_id` is generated when omitted. Writes are idempotent by `(channel_id, level, window_start, window_end)`.
+
+## L0 Reports API
+
+List reports:
+
+```http
+GET /api/reports?level=L0&channel_id=26929515373@chatroom&limit=20
+```
+
+Response:
+
+```json
+{
+  "reports": []
+}
+```
+
+Upsert report:
+
+```http
+POST /api/reports
+Authorization: Bearer <CHATVIEW_API_KEY>
+Content-Type: application/json
+```
+
+```json
+{
+  "report_id": "optional-idempotency-key",
+  "level": "L0",
+  "channel_id": "26929515373@chatroom",
+  "title": "Fed 缩表与风险偏好的小时观察",
+  "summary": "5 分钟可读摘要",
+  "markdown": "markdown report with reference links and insight",
+  "topics": ["Fed", "缩表", "风险偏好"],
+  "references": [{"title": "source title", "url": "https://..."}],
+  "window_start": 1779465600,
+  "window_end": 1779469200,
+  "source_state_ids": ["st_xxx"],
+  "source_message_ids": ["..."]
+}
+```
+
+`report_id` is generated when omitted. Writes are upserts by `report_id`.
 
 ## Image Upload API
 

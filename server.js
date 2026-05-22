@@ -12,7 +12,37 @@ const uploadsDir = process.env.UPLOAD_DIR || path.join('/tmp', 'chatview-uploads
 const port = Number(process.env.PORT || 3000);
 const maxUploadBytes = Number(process.env.MAX_IMAGE_UPLOAD_BYTES || 10 * 1024 * 1024);
 const allowedPriorities = new Set(['high', 'normal', 'low', 'ignore']);
+const allowedLevels = new Set(['L0', 'L1']);
 const messageFields = 'external_id, channel_id, channel, username, content, image_url, timestamp, priority';
+const channelStateFields = [
+  'state_id',
+  'channel_id',
+  'level',
+  'markdown',
+  'cards',
+  'window_start',
+  'window_end',
+  'source_message_ids',
+  'previous_state_id',
+  'created_at',
+  'updated_at'
+].join(', ');
+const reportFields = [
+  'report_id',
+  'level',
+  'channel_id',
+  'title',
+  'summary',
+  'markdown',
+  'topics',
+  'reference_items as "references"',
+  'window_start',
+  'window_end',
+  'source_state_ids',
+  'source_message_ids',
+  'created_at',
+  'updated_at'
+].join(', ');
 const imageTypes = new Map([
   ['image/jpeg', '.jpg'],
   ['image/png', '.png'],
@@ -23,6 +53,8 @@ const imageTypes = new Map([
 ]);
 
 let memoryMessages = [];
+let memoryChannelStates = [];
+let memoryReports = [];
 let pool = null;
 let dbReady = false;
 
@@ -48,6 +80,12 @@ function clampLimit(value) {
   return Math.min(100, Math.max(1, Math.floor(n)));
 }
 
+function clampReportLimit(value) {
+  const n = Number(value || 20);
+  if (!Number.isFinite(n)) return 20;
+  return Math.min(100, Math.max(1, Math.floor(n)));
+}
+
 function parseCursor(value) {
   const n = Number(value || 0);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
@@ -57,6 +95,15 @@ function normalizePriority(value) {
   if (!value) return '';
   const priority = String(value).trim().toLowerCase();
   return allowedPriorities.has(priority) ? priority : null;
+}
+
+function normalizeLevel(value) {
+  const level = String(value || '').trim().toUpperCase();
+  return allowedLevels.has(level) ? level : null;
+}
+
+function generateId(prefix) {
+  return `${prefix}_${crypto.randomBytes(12).toString('hex')}`;
 }
 
 function writeKeys() {
@@ -131,6 +178,120 @@ function normalizeMessageBatch(body) {
   return raw.map(normalizeMessage);
 }
 
+function normalizeStringArray(value, field) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+  if (value.length > 1000) throw new Error(`${field} must contain <= 1000 items`);
+  return value
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+}
+
+function normalizeWindow(input) {
+  const windowStart = Number(input.window_start);
+  const windowEnd = Number(input.window_end);
+  if (!Number.isFinite(windowStart) || windowStart <= 0) throw new Error('window_start must be Unix seconds');
+  if (!Number.isFinite(windowEnd) || windowEnd <= 0) throw new Error('window_end must be Unix seconds');
+  if (windowEnd < windowStart) throw new Error('window_end must be >= window_start');
+  return {
+    window_start: Math.floor(windowStart),
+    window_end: Math.floor(windowEnd)
+  };
+}
+
+function normalizeCards(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new Error('cards must be an array');
+  if (value.length > 200) throw new Error('cards must contain <= 200 items');
+  return value.map((card, index) => {
+    if (!card || typeof card !== 'object' || Array.isArray(card)) {
+      throw new Error(`cards[${index}] must be an object`);
+    }
+    const priority = String(card.priority || 'normal').trim().toLowerCase();
+    if (!allowedPriorities.has(priority)) {
+      throw new Error(`cards[${index}].priority must be one of high, normal, low, ignore`);
+    }
+    return {
+      title: String(card.title || '').trim(),
+      body: card.body == null ? '' : String(card.body),
+      priority,
+      message_ids: normalizeStringArray(card.message_ids, `cards[${index}].message_ids`)
+    };
+  });
+}
+
+function normalizeReferences(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new Error('references must be an array');
+  if (value.length > 500) throw new Error('references must contain <= 500 items');
+  return value.map((reference, index) => {
+    if (!reference || typeof reference !== 'object' || Array.isArray(reference)) {
+      throw new Error(`references[${index}] must be an object`);
+    }
+    return {
+      title: String(reference.title || '').trim(),
+      url: String(reference.url || '').trim()
+    };
+  }).filter((reference) => reference.title || reference.url);
+}
+
+function normalizeChannelState(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('channel state must be an object');
+  }
+
+  const stateId = String(input.state_id || generateId('st')).trim();
+  const channelId = String(input.channel_id || '').trim();
+  const level = normalizeLevel(input.level || 'L1');
+  const window = normalizeWindow(input);
+
+  if (!stateId) throw new Error('state_id is required');
+  if (!channelId) throw new Error('channel_id is required');
+  if (level !== 'L1') throw new Error('level must be L1');
+
+  return {
+    state_id: stateId,
+    channel_id: channelId,
+    level,
+    markdown: input.markdown == null ? '' : String(input.markdown),
+    cards: normalizeCards(input.cards),
+    ...window,
+    source_message_ids: normalizeStringArray(input.source_message_ids, 'source_message_ids'),
+    previous_state_id: input.previous_state_id == null || input.previous_state_id === ''
+      ? null
+      : String(input.previous_state_id).trim()
+  };
+}
+
+function normalizeReport(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('report must be an object');
+  }
+
+  const reportId = String(input.report_id || generateId('rp')).trim();
+  const channelId = String(input.channel_id || '').trim();
+  const level = normalizeLevel(input.level || 'L0');
+  const window = normalizeWindow(input);
+
+  if (!reportId) throw new Error('report_id is required');
+  if (!channelId) throw new Error('channel_id is required');
+  if (level !== 'L0') throw new Error('level must be L0');
+
+  return {
+    report_id: reportId,
+    level,
+    channel_id: channelId,
+    title: String(input.title || '').trim(),
+    summary: input.summary == null ? '' : String(input.summary),
+    markdown: input.markdown == null ? '' : String(input.markdown),
+    topics: normalizeStringArray(input.topics, 'topics'),
+    references: normalizeReferences(input.references),
+    ...window,
+    source_state_ids: normalizeStringArray(input.source_state_ids, 'source_state_ids'),
+    source_message_ids: normalizeStringArray(input.source_message_ids, 'source_message_ids')
+  };
+}
+
 async function initDb() {
   if (!process.env.DATABASE_URL) return;
 
@@ -156,6 +317,44 @@ async function initDb() {
     `);
     await client.query('create index if not exists messages_channel_timestamp_idx on messages (channel_id, timestamp desc, external_id desc)');
     await client.query('create index if not exists messages_priority_idx on messages (priority)');
+    await client.query(`
+      create table if not exists channel_states (
+        state_id text primary key,
+        channel_id text not null,
+        level text not null
+          check (level in ('L1')),
+        markdown text not null default '',
+        cards jsonb not null default '[]'::jsonb,
+        window_start bigint not null,
+        window_end bigint not null,
+        source_message_ids jsonb not null default '[]'::jsonb,
+        previous_state_id text,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        unique (channel_id, level, window_start, window_end)
+      )
+    `);
+    await client.query('create index if not exists channel_states_latest_idx on channel_states (channel_id, level, window_end desc, updated_at desc)');
+    await client.query(`
+      create table if not exists reports (
+        report_id text primary key,
+        level text not null
+          check (level in ('L0')),
+        channel_id text not null,
+        title text not null default '',
+        summary text not null default '',
+        markdown text not null default '',
+        topics jsonb not null default '[]'::jsonb,
+        reference_items jsonb not null default '[]'::jsonb,
+        window_start bigint not null,
+        window_end bigint not null,
+        source_state_ids jsonb not null default '[]'::jsonb,
+        source_message_ids jsonb not null default '[]'::jsonb,
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now()
+      )
+    `);
+    await client.query('create index if not exists reports_latest_idx on reports (level, channel_id, window_end desc, updated_at desc)');
     dbReady = true;
   } finally {
     client.release();
@@ -296,6 +495,175 @@ async function upsertMessages(messages) {
   memoryMessages = [...byId.values()];
 }
 
+async function getChannelState(params) {
+  const channelId = String(params.get('channel_id') || '').trim();
+  const level = normalizeLevel(params.get('level') || 'L1');
+
+  if (!channelId) return { status: 400, body: { error: 'channel_id is required' } };
+  if (level !== 'L1') return { status: 400, body: { error: 'level must be L1' } };
+
+  if (dbReady) {
+    const result = await pool.query(
+      `select ${channelStateFields}
+       from channel_states
+       where channel_id = $1 and level = $2
+       order by window_end desc, window_start desc, updated_at desc, state_id desc
+       limit 1`,
+      [channelId, level]
+    );
+    return { status: 200, body: { state: result.rows[0] || null } };
+  }
+
+  const state = memoryChannelStates
+    .filter((item) => item.channel_id === channelId && item.level === level)
+    .sort((a, b) =>
+      b.window_end - a.window_end ||
+      b.window_start - a.window_start ||
+      String(b.updated_at).localeCompare(String(a.updated_at)) ||
+      b.state_id.localeCompare(a.state_id)
+    )[0] || null;
+  return { status: 200, body: { state } };
+}
+
+async function upsertChannelState(state) {
+  if (dbReady) {
+    const result = await pool.query(
+      `insert into channel_states
+       (state_id, channel_id, level, markdown, cards, window_start, window_end, source_message_ids, previous_state_id)
+       values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9)
+       on conflict (channel_id, level, window_start, window_end) do update set
+         markdown = excluded.markdown,
+         cards = excluded.cards,
+         source_message_ids = excluded.source_message_ids,
+         previous_state_id = excluded.previous_state_id,
+         updated_at = now()
+       returning ${channelStateFields}`,
+      [
+        state.state_id,
+        state.channel_id,
+        state.level,
+        state.markdown,
+        JSON.stringify(state.cards),
+        state.window_start,
+        state.window_end,
+        JSON.stringify(state.source_message_ids),
+        state.previous_state_id
+      ]
+    );
+    return result.rows[0];
+  }
+
+  const now = new Date().toISOString();
+  const index = memoryChannelStates.findIndex((item) =>
+    item.channel_id === state.channel_id &&
+    item.level === state.level &&
+    item.window_start === state.window_start &&
+    item.window_end === state.window_end
+  );
+  if (index >= 0) {
+    memoryChannelStates[index] = {
+      ...state,
+      state_id: memoryChannelStates[index].state_id,
+      created_at: memoryChannelStates[index].created_at,
+      updated_at: now
+    };
+    return memoryChannelStates[index];
+  }
+  const stored = { ...state, created_at: now, updated_at: now };
+  memoryChannelStates.push(stored);
+  return stored;
+}
+
+async function getReports(params) {
+  const limit = clampReportLimit(params.get('limit'));
+  const channelId = String(params.get('channel_id') || '').trim();
+  const level = normalizeLevel(params.get('level') || 'L0');
+
+  if (level !== 'L0') return { status: 400, body: { error: 'level must be L0' } };
+
+  if (dbReady) {
+    const where = ['level = $1'];
+    const values = [level];
+    if (channelId) {
+      values.push(channelId);
+      where.push(`channel_id = $${values.length}`);
+    }
+    values.push(limit);
+    const result = await pool.query(
+      `select ${reportFields}
+       from reports
+       where ${where.join(' and ')}
+       order by window_end desc, updated_at desc, report_id desc
+       limit $${values.length}`,
+      values
+    );
+    return { status: 200, body: { reports: result.rows } };
+  }
+
+  const reports = memoryReports
+    .filter((report) => report.level === level && (!channelId || report.channel_id === channelId))
+    .sort((a, b) =>
+      b.window_end - a.window_end ||
+      String(b.updated_at).localeCompare(String(a.updated_at)) ||
+      b.report_id.localeCompare(a.report_id)
+    )
+    .slice(0, limit);
+  return { status: 200, body: { reports } };
+}
+
+async function upsertReport(report) {
+  if (dbReady) {
+    const result = await pool.query(
+      `insert into reports
+       (report_id, level, channel_id, title, summary, markdown, topics, reference_items, window_start, window_end, source_state_ids, source_message_ids)
+       values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11::jsonb, $12::jsonb)
+       on conflict (report_id) do update set
+         level = excluded.level,
+         channel_id = excluded.channel_id,
+         title = excluded.title,
+         summary = excluded.summary,
+         markdown = excluded.markdown,
+         topics = excluded.topics,
+         reference_items = excluded.reference_items,
+         window_start = excluded.window_start,
+         window_end = excluded.window_end,
+         source_state_ids = excluded.source_state_ids,
+         source_message_ids = excluded.source_message_ids,
+         updated_at = now()
+       returning ${reportFields}`,
+      [
+        report.report_id,
+        report.level,
+        report.channel_id,
+        report.title,
+        report.summary,
+        report.markdown,
+        JSON.stringify(report.topics),
+        JSON.stringify(report.references),
+        report.window_start,
+        report.window_end,
+        JSON.stringify(report.source_state_ids),
+        JSON.stringify(report.source_message_ids)
+      ]
+    );
+    return result.rows[0];
+  }
+
+  const now = new Date().toISOString();
+  const index = memoryReports.findIndex((item) => item.report_id === report.report_id);
+  if (index >= 0) {
+    memoryReports[index] = {
+      ...report,
+      created_at: memoryReports[index].created_at,
+      updated_at: now
+    };
+    return memoryReports[index];
+  }
+  const stored = { ...report, created_at: now, updated_at: now };
+  memoryReports.push(stored);
+  return stored;
+}
+
 function extForImage(contentType, filename = '') {
   const cleanType = String(contentType || '').split(';')[0].trim().toLowerCase();
   if (imageTypes.has(cleanType)) return imageTypes.get(cleanType);
@@ -417,7 +785,9 @@ async function handler(req, res) {
         ok: true,
         storage: dbReady ? 'postgres' : 'memory',
         auth_configured: writeKeys().length > 0,
-        messages: dbReady ? undefined : memoryMessages.length
+        messages: dbReady ? undefined : memoryMessages.length,
+        channel_states: dbReady ? undefined : memoryChannelStates.length,
+        reports: dbReady ? undefined : memoryReports.length
       });
       return;
     }
@@ -430,6 +800,52 @@ async function handler(req, res) {
     if (req.method === 'GET' && pathname === '/api/messages') {
       const result = await getMessages(url.searchParams);
       json(res, result.status, result.body);
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/channel-state') {
+      const result = await getChannelState(url.searchParams);
+      json(res, result.status, result.body);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/channel-state') {
+      if (!isAuthorized(req)) {
+        json(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      let input;
+      try {
+        input = normalizeChannelState(await readJson(req));
+      } catch (error) {
+        badRequest(res, error.message);
+        return;
+      }
+      const state = await upsertChannelState(input);
+      json(res, 200, { ok: true, state });
+      return;
+    }
+
+    if (req.method === 'GET' && pathname === '/api/reports') {
+      const result = await getReports(url.searchParams);
+      json(res, result.status, result.body);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/reports') {
+      if (!isAuthorized(req)) {
+        json(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      let input;
+      try {
+        input = normalizeReport(await readJson(req));
+      } catch (error) {
+        badRequest(res, error.message);
+        return;
+      }
+      const report = await upsertReport(input);
+      json(res, 200, { ok: true, report });
       return;
     }
 
