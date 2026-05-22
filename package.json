@@ -6,8 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "build:seed": "node scripts/build-seed.mjs",
-    "check": "node --check server.js && node --check scripts/build-seed.mjs"
+    "check": "node --check server.js && node --check public/app.js"
   },
   "engines": {
     "node": ">=20"

@@ -230,7 +230,6 @@ function messageMarkup(message) {
 
   return `
     <article class="${classes}" data-action="detail" data-external-id="${escapeHtml(message.external_id)}">
-      <div class="avatar ${avatarClass(message)}">${escapeHtml(initials(message.username))}</div>
       <div class="message-main">
         <div class="message-head">
           <strong>${escapeHtml(message.username)}</strong>

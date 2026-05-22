@@ -1,4 +1,3 @@
-import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,12 +6,11 @@ import { Pool } from 'pg';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = __dirname;
 const publicDir = path.join(root, 'public');
-const seedPath = path.join(root, 'data', 'seed-messages.json');
 const port = Number(process.env.PORT || 3000);
 const allowedPriorities = new Set(['high', 'normal', 'low', 'ignore']);
 const messageFields = 'external_id, channel_id, channel, username, content, image_url, timestamp, priority';
 
-let seed = { channels: [], messages: [] };
+let memoryMessages = [];
 let pool = null;
 let dbReady = false;
 
@@ -22,8 +20,8 @@ function json(res, status, body) {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET, OPTIONS',
-    'access-control-allow-headers': 'content-type'
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'authorization, content-type, x-api-key'
   });
   res.end(payload);
 }
@@ -49,9 +47,66 @@ function normalizePriority(value) {
   return allowedPriorities.has(priority) ? priority : null;
 }
 
-async function loadSeed() {
-  const text = await fs.readFile(seedPath, 'utf8');
-  seed = JSON.parse(text);
+function writeKeys() {
+  return String(process.env.CHATVIEW_API_KEY || process.env.API_KEY || '')
+    .split(',')
+    .map((key) => key.trim())
+    .filter(Boolean);
+}
+
+function isAuthorized(req) {
+  const keys = writeKeys();
+  if (keys.length === 0) return false;
+
+  const headerKey = req.headers['x-api-key'];
+  const auth = req.headers.authorization || '';
+  const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
+  return [headerKey, bearer].some((candidate) => keys.includes(String(candidate || '').trim()));
+}
+
+async function readJson(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  if (chunks.length === 0) return {};
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+function normalizeMessage(input) {
+  if (!input || typeof input !== 'object') {
+    throw new Error('message must be an object');
+  }
+
+  const externalId = String(input.external_id || '').trim();
+  const channelId = String(input.channel_id || '').trim();
+  const channel = String(input.channel || '').trim();
+  const username = String(input.username || '').trim();
+  const timestamp = Number(input.timestamp);
+  const priority = String(input.priority || 'normal').trim().toLowerCase();
+
+  if (!externalId) throw new Error('external_id is required');
+  if (!channelId) throw new Error('channel_id is required');
+  if (!channel) throw new Error('channel is required');
+  if (!username) throw new Error('username is required');
+  if (!Number.isFinite(timestamp) || timestamp <= 0) throw new Error('timestamp must be Unix seconds');
+  if (!allowedPriorities.has(priority)) throw new Error('priority must be one of high, normal, low, ignore');
+
+  return {
+    external_id: externalId,
+    channel_id: channelId,
+    channel,
+    username,
+    content: input.content == null ? '' : String(input.content),
+    image_url: input.image_url == null || input.image_url === '' ? null : String(input.image_url),
+    timestamp: Math.floor(timestamp),
+    priority
+  };
+}
+
+function normalizeMessageBatch(body) {
+  const raw = Array.isArray(body) ? body : Array.isArray(body.messages) ? body.messages : body.message ? [body.message] : [body];
+  if (raw.length === 0) throw new Error('at least one message is required');
+  if (raw.length > 500) throw new Error('batch size must be <= 500');
+  return raw.map(normalizeMessage);
 }
 
 async function initDb() {
@@ -79,35 +134,6 @@ async function initDb() {
     `);
     await client.query('create index if not exists messages_channel_timestamp_idx on messages (channel_id, timestamp desc, external_id desc)');
     await client.query('create index if not exists messages_priority_idx on messages (priority)');
-
-    const count = Number((await client.query('select count(*)::int as count from messages')).rows[0].count);
-    if (count === 0 && seed.messages.length > 0) {
-      await client.query('begin');
-      try {
-        for (const message of seed.messages) {
-          await client.query(
-            `insert into messages
-             (external_id, channel_id, channel, username, content, image_url, timestamp, priority)
-             values ($1, $2, $3, $4, $5, $6, $7, $8)
-             on conflict (external_id) do nothing`,
-            [
-              message.external_id,
-              message.channel_id,
-              message.channel,
-              message.username,
-              message.content || '',
-              message.image_url || null,
-              message.timestamp,
-              message.priority || 'normal'
-            ]
-          );
-        }
-        await client.query('commit');
-      } catch (error) {
-        await client.query('rollback');
-        throw error;
-      }
-    }
     dbReady = true;
   } finally {
     client.release();
@@ -124,7 +150,17 @@ async function getChannels() {
     `);
     return result.rows;
   }
-  return seed.channels;
+  const channels = new Map();
+  for (const message of memoryMessages) {
+    const current = channels.get(message.channel_id);
+    if (current) current.message_count += 1;
+    else channels.set(message.channel_id, {
+      channel_id: message.channel_id,
+      channel: message.channel,
+      message_count: 1
+    });
+  }
+  return [...channels.values()].sort((a, b) => b.message_count - a.message_count || a.channel.localeCompare(b.channel));
 }
 
 async function getMessages(params) {
@@ -167,9 +203,10 @@ async function getMessages(params) {
     };
   }
 
-  let list = seed.messages;
+  let list = memoryMessages;
   if (channelId) list = list.filter((message) => message.channel_id === channelId);
   if (priority) list = list.filter((message) => message.priority === priority);
+  list = [...list].sort((a, b) => b.timestamp - a.timestamp || b.external_id.localeCompare(a.external_id));
   const page = list.slice(offset, offset + limit + 1);
   return {
     status: 200,
@@ -189,7 +226,52 @@ async function getMessage(externalId) {
     );
     return result.rows[0] || null;
   }
-  return seed.messages.find((message) => message.external_id === externalId) || null;
+  return memoryMessages.find((message) => message.external_id === externalId) || null;
+}
+
+async function upsertMessages(messages) {
+  if (dbReady) {
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      for (const message of messages) {
+        await client.query(
+          `insert into messages
+           (external_id, channel_id, channel, username, content, image_url, timestamp, priority)
+           values ($1, $2, $3, $4, $5, $6, $7, $8)
+           on conflict (external_id) do update set
+             channel_id = excluded.channel_id,
+             channel = excluded.channel,
+             username = excluded.username,
+             content = excluded.content,
+             image_url = excluded.image_url,
+             timestamp = excluded.timestamp,
+             priority = excluded.priority`,
+          [
+            message.external_id,
+            message.channel_id,
+            message.channel,
+            message.username,
+            message.content,
+            message.image_url,
+            message.timestamp,
+            message.priority
+          ]
+        );
+      }
+      await client.query('commit');
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
+    return;
+  }
+
+  const byId = new Map(memoryMessages.map((message) => [message.external_id, message]));
+  for (const message of messages) byId.set(message.external_id, message);
+  memoryMessages = [...byId.values()];
 }
 
 const mime = new Map([
@@ -227,8 +309,8 @@ async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'access-control-allow-origin': '*',
-      'access-control-allow-methods': 'GET, OPTIONS',
-      'access-control-allow-headers': 'content-type'
+      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      'access-control-allow-headers': 'authorization, content-type, x-api-key'
     });
     res.end();
     return;
@@ -242,7 +324,8 @@ async function handler(req, res) {
       json(res, 200, {
         ok: true,
         storage: dbReady ? 'postgres' : 'memory',
-        messages: dbReady ? undefined : seed.messages.length
+        auth_configured: writeKeys().length > 0,
+        messages: dbReady ? undefined : memoryMessages.length
       });
       return;
     }
@@ -258,6 +341,18 @@ async function handler(req, res) {
       return;
     }
 
+    if (req.method === 'POST' && pathname === '/api/messages') {
+      if (!isAuthorized(req)) {
+        json(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const body = await readJson(req);
+      const messages = normalizeMessageBatch(body);
+      await upsertMessages(messages);
+      json(res, 200, { ok: true, upserted: messages.length });
+      return;
+    }
+
     if (req.method === 'GET' && pathname.startsWith('/api/messages/')) {
       const externalId = decodeURIComponent(pathname.slice('/api/messages/'.length));
       const message = await getMessage(externalId);
@@ -270,7 +365,7 @@ async function handler(req, res) {
     }
 
     if (pathname.startsWith('/api/')) {
-      badRequest(res, 'unknown API route');
+      badRequest(res, 'unknown API route or method');
       return;
     }
 
@@ -281,15 +376,15 @@ async function handler(req, res) {
   }
 }
 
-await loadSeed();
 try {
   await initDb();
 } catch (error) {
-  console.error('Postgres unavailable, falling back to in-memory seed:', error.message);
+  console.error('Postgres unavailable, falling back to empty in-memory store:', error.message);
   dbReady = false;
 }
 
 http.createServer(handler).listen(port, () => {
   console.log(`ChatView listening on http://localhost:${port}`);
-  console.log(`Storage: ${dbReady ? 'postgres' : 'memory seed'}`);
+  console.log(`Storage: ${dbReady ? 'postgres' : 'memory'}`);
+  console.log(`Write auth: ${writeKeys().length > 0 ? 'configured' : 'missing'}`);
 });

@@ -27,8 +27,9 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; }
+html { height: 100%; overflow: hidden; }
 body {
-  height: 100vh;
+  height: 100%;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
@@ -41,9 +42,11 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 code { font-family: var(--font-mono); font-size: .92em; }
 
 .app-shell {
-  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .loading, .status, .empty, .error {
@@ -259,6 +262,7 @@ code { font-family: var(--font-mono); font-size: .92em; }
 
 .columns {
   flex: 1;
+  height: 100%;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(360px, 1.12fr) minmax(310px, .94fr) minmax(330px, 1fr);
@@ -266,6 +270,7 @@ code { font-family: var(--font-mono); font-size: .92em; }
 }
 .column {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -332,8 +337,11 @@ code { font-family: var(--font-mono); font-size: .92em; }
 }
 .column-body {
   flex: 1;
+  height: 100%;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .hidden-banner, .load-more {
@@ -355,7 +363,7 @@ code { font-family: var(--font-mono); font-size: .92em; }
 .message-list { padding: 6px 0 12px; }
 .message {
   display: grid;
-  grid-template-columns: 30px 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   padding: 9px 18px;
   border-left: 2px solid transparent;
@@ -368,24 +376,6 @@ code { font-family: var(--font-mono); font-size: .92em; }
 .message.priority-low, .message.priority-ignore { opacity: .78; }
 .message.archived { opacity: .42; }
 .message.archived .message-text { text-decoration: line-through; text-decoration-color: var(--text-dim); }
-.avatar {
-  width: 30px;
-  height: 30px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-sm);
-  color: #fff;
-  font: 700 11px/1 var(--font-sans);
-}
-.av-1 { background: #5f7da6; }
-.av-2 { background: #a85e6e; }
-.av-3 { background: #6d8c5a; }
-.av-4 { background: #b88a3e; }
-.av-5 { background: #7e6db2; }
-.av-6 { background: #4e8d8d; }
-.av-7 { background: #c47862; }
-.av-8 { background: #6b6b85; }
 .message-main { min-width: 0; }
 .message-head {
   display: flex;
@@ -600,7 +590,8 @@ code { font-family: var(--font-mono); font-size: .92em; }
   .columns { display: block; }
   .column {
     display: none;
-    height: calc(100vh - 48px - 56px);
+    height: calc(100dvh - 48px - 56px);
+    min-height: 0;
     border-right: 0;
   }
   .column.active-layer { display: flex; }
@@ -612,9 +603,8 @@ code { font-family: var(--font-mono); font-size: .92em; }
 @media (max-width: 520px) {
   .channel-name { display: none; }
   .column-head h1 { font-size: 18px; }
-  .message { grid-template-columns: 30px 1fr; }
   .message-actions {
-    grid-column: 2;
+    grid-column: 1;
     margin-top: -2px;
   }
   .detail-card dl { grid-template-columns: 1fr; }

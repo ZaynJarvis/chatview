@@ -1,28 +1,23 @@
 # ChatView
 
-ChatLens L2 viewer for cleaned chat messages.
+ChatLens L2 viewer and cleaned-message ingestion API.
 
 ## What Is Implemented
 
-- `public/ChatLens.html`: three-column ChatLens UI based on the design handoff.
-- L2 is wired to the message API contract.
-- L1 and L0 keep the designed columns as placeholders until their backend contracts exist.
-- Low and ignored messages are hidden by default unless explicitly shown or filtered.
+- `public/ChatLens.html`: three-column ChatLens UI.
+- L2 consumes the message API contract.
+- L1 and L0 are placeholders until their backend contracts exist.
 - Channel filter, priority filter, search across loaded messages, star/archive local state, image thumbnails, lightbox, and message detail fetch are implemented.
-- `server.js`: Node HTTP server with Postgres support on Railway and in-memory seed fallback locally.
+- `server.js`: Node HTTP server with Postgres support on Railway and an empty in-memory fallback locally.
+- `POST /api/messages`: authenticated daemon ingestion endpoint for cleaned messages.
 
-The original Claude Design handoff remains in:
-
-- `chats/chat1.md`
-- `project/ChatLens.html`
-- `project/*.jsx`
-- `project/styles.css`
+No mock or seed messages are bundled in the repo.
 
 ## Run Locally
 
 ```sh
 npm install
-npm start
+CHATVIEW_API_KEY=replace_me npm start
 ```
 
 Open:
@@ -31,29 +26,40 @@ Open:
 http://localhost:3000/ChatLens.html
 ```
 
-## API Contract
+## Read API
 
 ```http
 GET /api/channels
+GET /api/messages?channel_id=&priority=&limit=50&cursor=
+GET /api/messages/{external_id}
 ```
+
+`priority` supports `high`, `normal`, `low`, and `ignore`.
+
+## Daemon Write API
+
+```http
+POST /api/messages
+Authorization: Bearer <CHATVIEW_API_KEY>
+Content-Type: application/json
+```
+
+Single message:
 
 ```json
 {
-  "channels": [
-    {
-      "channel_id": "26929515373@chatroom",
-      "channel": "芝士美股分享②群",
-      "message_count": 2397
-    }
-  ]
+  "external_id": "26929515373@chatroom:1779325379000001",
+  "channel_id": "26929515373@chatroom",
+  "channel": "芝士美股分享②群",
+  "username": "灝Fung",
+  "content": "日本有什么好股票吗",
+  "image_url": null,
+  "timestamp": 1779325379,
+  "priority": "normal"
 }
 ```
 
-```http
-GET /api/messages?channel_id=&priority=&limit=50&cursor=
-```
-
-Supports `priority=high|normal|low|ignore`.
+Batch:
 
 ```json
 {
@@ -68,45 +74,11 @@ Supports `priority=high|normal|low|ignore`.
       "timestamp": 1779325379,
       "priority": "normal"
     }
-  ],
-  "next_cursor": "50"
+  ]
 }
 ```
 
-```http
-GET /api/messages/{external_id}
-```
-
-```json
-{
-  "message": {
-    "external_id": "26929515373@chatroom:1779325379000001",
-    "channel_id": "26929515373@chatroom",
-    "channel": "芝士美股分享②群",
-    "username": "灝Fung",
-    "content": "日本有什么好股票吗",
-    "image_url": null,
-    "timestamp": 1779325379,
-    "priority": "normal"
-  }
-}
-```
-
-## Data
-
-`data/seed-messages.json` contains 4,100 cleaned messages across:
-
-- `芝士美股分享②群`
-- `芝士美股分享①群`
-- `Slock 中文社区（暂定）`
-
-All seed priorities default to `normal`, matching the temporary backend behavior before the priority tagging agent is connected.
-
-Regenerate the seed from the local export:
-
-```sh
-npm run build:seed
-```
+The endpoint also accepts `x-api-key: <CHATVIEW_API_KEY>`. Writes are upserts by `external_id`.
 
 ## Railway
 
@@ -114,6 +86,5 @@ The app expects Railway to provide:
 
 - Node service running `npm start`
 - `DATABASE_URL` from Railway Postgres
+- `CHATVIEW_API_KEY`
 - `PORT` from Railway
-
-On first boot with Postgres, the server creates the `messages` table and seeds it if empty.
