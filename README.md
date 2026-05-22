@@ -10,6 +10,7 @@ ChatLens L2 viewer and cleaned-message ingestion API.
 - Channel filter, priority filter, search across loaded messages, star/archive local state, image thumbnails, lightbox, and message detail fetch are implemented.
 - `server.js`: Node HTTP server with Postgres support on Railway and an empty in-memory fallback locally.
 - `POST /api/messages`: authenticated daemon ingestion endpoint for cleaned messages.
+- `POST /api/images`: authenticated ephemeral image upload endpoint for the current deploy session.
 
 No mock or seed messages are bundled in the repo.
 
@@ -79,6 +80,38 @@ Batch:
 ```
 
 The endpoint also accepts `x-api-key: <CHATVIEW_API_KEY>`. Writes are upserts by `external_id`.
+
+## Image Upload API
+
+Images are stored on the Railway container filesystem under `/tmp`, so they are ephemeral and can disappear after a redeploy/restart. This is intended for current deploy-session display only.
+
+Binary upload:
+
+```http
+POST /api/images
+Authorization: Bearer <CHATVIEW_API_KEY>
+Content-Type: image/png
+```
+
+Base64 JSON upload:
+
+```json
+{
+  "filename": "message.png",
+  "content_type": "image/png",
+  "data_base64": "..."
+}
+```
+
+Response:
+
+```json
+{
+  "image_url": "https://chatview-production.up.railway.app/uploads/..."
+}
+```
+
+Send that returned `image_url` in the later `POST /api/messages` payload.
 
 ## Railway
 

@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,9 +8,19 @@ import { Pool } from 'pg';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = __dirname;
 const publicDir = path.join(root, 'public');
+const uploadsDir = process.env.UPLOAD_DIR || path.join('/tmp', 'chatview-uploads');
 const port = Number(process.env.PORT || 3000);
+const maxUploadBytes = Number(process.env.MAX_IMAGE_UPLOAD_BYTES || 10 * 1024 * 1024);
 const allowedPriorities = new Set(['high', 'normal', 'low', 'ignore']);
 const messageFields = 'external_id, channel_id, channel, username, content, image_url, timestamp, priority';
+const imageTypes = new Map([
+  ['image/jpeg', '.jpg'],
+  ['image/png', '.png'],
+  ['image/gif', '.gif'],
+  ['image/webp', '.webp'],
+  ['image/heic', '.heic'],
+  ['image/heif', '.heif']
+]);
 
 let memoryMessages = [];
 let pool = null;
@@ -21,7 +33,7 @@ function json(res, status, body) {
     'cache-control': 'no-store',
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET, POST, OPTIONS',
-    'access-control-allow-headers': 'authorization, content-type, x-api-key'
+    'access-control-allow-headers': 'authorization, content-type, x-api-key, x-filename'
   });
   res.end(payload);
 }
@@ -64,11 +76,21 @@ function isAuthorized(req) {
   return [headerKey, bearer].some((candidate) => keys.includes(String(candidate || '').trim()));
 }
 
-async function readJson(req) {
+async function readBuffer(req, maxBytes = 1024 * 1024) {
   const chunks = [];
+  let total = 0;
   for await (const chunk of req) chunks.push(chunk);
-  if (chunks.length === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  for (const chunk of chunks) {
+    total += chunk.length;
+    if (total > maxBytes) throw new Error(`request body must be <= ${maxBytes} bytes`);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function readJson(req) {
+  const buffer = await readBuffer(req);
+  if (buffer.length === 0) return {};
+  return JSON.parse(buffer.toString('utf8'));
 }
 
 function normalizeMessage(input) {
@@ -274,12 +296,60 @@ async function upsertMessages(messages) {
   memoryMessages = [...byId.values()];
 }
 
+function extForImage(contentType, filename = '') {
+  const cleanType = String(contentType || '').split(';')[0].trim().toLowerCase();
+  if (imageTypes.has(cleanType)) return imageTypes.get(cleanType);
+
+  const ext = path.extname(String(filename || '')).toLowerCase();
+  if (['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif'].includes(ext)) {
+    return ext === '.jpeg' ? '.jpg' : ext;
+  }
+  return '';
+}
+
+async function receiveImage(req) {
+  const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  let filename = String(req.headers['x-filename'] || '');
+  let type = contentType;
+  let buffer;
+
+  if (contentType === 'application/json') {
+    const bodyBuffer = await readBuffer(req, maxUploadBytes + 1024);
+    const body = JSON.parse(bodyBuffer.toString('utf8'));
+    filename = body.filename || filename;
+    type = String(body.content_type || '').split(';')[0].trim().toLowerCase();
+    if (!body.data_base64) throw new Error('data_base64 is required');
+    buffer = Buffer.from(String(body.data_base64), 'base64');
+  } else {
+    buffer = await readBuffer(req, maxUploadBytes);
+  }
+
+  if (buffer.length === 0) throw new Error('image body is empty');
+  if (buffer.length > maxUploadBytes) throw new Error(`image must be <= ${maxUploadBytes} bytes`);
+
+  const ext = extForImage(type, filename);
+  if (!ext) throw new Error('content type must be an image: jpeg, png, gif, webp, heic, or heif');
+
+  await fs.mkdir(uploadsDir, { recursive: true });
+  const storedName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
+  const filePath = path.join(uploadsDir, storedName);
+  await fs.writeFile(filePath, buffer, { flag: 'wx' });
+  return storedName;
+}
+
 const mime = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.css', 'text/css; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
-  ['.svg', 'image/svg+xml']
+  ['.svg', 'image/svg+xml'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.png', 'image/png'],
+  ['.gif', 'image/gif'],
+  ['.webp', 'image/webp'],
+  ['.heic', 'image/heic'],
+  ['.heif', 'image/heif']
 ]);
 
 async function serveStatic(req, res, pathname) {
@@ -305,12 +375,34 @@ async function serveStatic(req, res, pathname) {
   }
 }
 
+async function serveUpload(res, pathname) {
+  const basename = path.basename(decodeURIComponent(pathname.slice('/uploads/'.length)));
+  if (!basename || basename.includes('/') || basename.includes('\\')) {
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+    return;
+  }
+
+  try {
+    const filePath = path.join(uploadsDir, basename);
+    const data = await fs.readFile(filePath);
+    res.writeHead(200, {
+      'content-type': mime.get(path.extname(filePath).toLowerCase()) || 'application/octet-stream',
+      'cache-control': 'public, max-age=86400'
+    });
+    res.end(data);
+  } catch {
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+  }
+}
+
 async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'access-control-allow-origin': '*',
       'access-control-allow-methods': 'GET, POST, OPTIONS',
-      'access-control-allow-headers': 'authorization, content-type, x-api-key'
+      'access-control-allow-headers': 'authorization, content-type, x-api-key, x-filename'
     });
     res.end();
     return;
@@ -353,6 +445,18 @@ async function handler(req, res) {
       return;
     }
 
+    if (req.method === 'POST' && pathname === '/api/images') {
+      if (!isAuthorized(req)) {
+        json(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const storedName = await receiveImage(req);
+      const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
+      const host = req.headers.host || `localhost:${port}`;
+      json(res, 200, { image_url: `${proto}://${host}/uploads/${storedName}` });
+      return;
+    }
+
     if (req.method === 'GET' && pathname.startsWith('/api/messages/')) {
       const externalId = decodeURIComponent(pathname.slice('/api/messages/'.length));
       const message = await getMessage(externalId);
@@ -366,6 +470,11 @@ async function handler(req, res) {
 
     if (pathname.startsWith('/api/')) {
       badRequest(res, 'unknown API route or method');
+      return;
+    }
+
+    if (req.method === 'GET' && pathname.startsWith('/uploads/')) {
+      await serveUpload(res, pathname);
       return;
     }
 
