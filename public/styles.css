@@ -163,6 +163,15 @@ code { font-family: var(--font-mono); font-size: .92em; }
   gap: 8px;
 }
 
+.sync-stamp {
+  max-width: 190px;
+  overflow: hidden;
+  color: var(--text-dim);
+  font: 600 11px/1 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .header-button, .header-select {
   height: 31px;
   flex: 0 0 auto;
@@ -722,6 +731,7 @@ code { font-family: var(--font-mono); font-size: .92em; }
   .brand span:not(.brand-mark), .channel-count { display: none; }
   .channel-chip { padding: 5px 8px; }
   .header-button, .header-select { padding: 0 8px; font-size: 11px; }
+  .sync-stamp { max-width: 128px; }
   .header-select { width: 88px; }
   .search-box { width: 38px; padding: 0; justify-content: center; }
   .search-box input { display: none; }
@@ -754,6 +764,7 @@ code { font-family: var(--font-mono); font-size: .92em; }
 
 @media (max-width: 520px) {
   .channel-name { display: none; }
+  .sync-stamp { display: none; }
   .header-button[data-action="refresh-all"] { width: 32px; overflow: hidden; color: transparent; position: relative; }
   .header-button[data-action="refresh-all"]::after {
     content: "R";

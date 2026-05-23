@@ -14,6 +14,7 @@ const state = {
   selectedReportId: '',
   loading: false,
   error: '',
+  latestMessageTimestamp: null,
   search: '',
   priority: '',
   activeLayer: 'L2',
@@ -48,6 +49,29 @@ function priorityLabel(priority) {
 function compactText(value, fallback = 'No text content', max = 96) {
   const text = String(value || '').replace(/\s+/g, ' ').trim() || fallback;
   return text.length > max ? `${text.slice(0, max - 1)}...` : text;
+}
+
+function formatTimestamp(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(new Date(seconds * 1000));
+}
+
+function lastUpdatedText() {
+  const label = formatTimestamp(state.latestMessageTimestamp);
+  return label ? `Last updated ${label}` : 'Last updated --';
+}
+
+function latestTimestampFromMessages(messages = []) {
+  return messages.reduce((latest, message) => {
+    const timestamp = Number(message?.timestamp || 0);
+    return Number.isFinite(timestamp) && timestamp > latest ? timestamp : latest;
+  }, 0) || null;
 }
 
 function safeHref(value) {
@@ -264,6 +288,8 @@ async function loadMessages({ reset = false } = {}) {
     state.messages = reset ? data.messages || [] : mergeMessages(state.messages, data.messages || []);
     cacheMessages(data.messages || []);
     state.nextCursor = data.next_cursor || null;
+    const latest = Number(data.latest_message_timestamp || latestTimestampFromMessages(state.messages));
+    state.latestMessageTimestamp = Number.isFinite(latest) && latest > 0 ? latest : null;
   } catch (error) {
     state.error = error.message;
   } finally {
@@ -406,6 +432,7 @@ function topbarMarkup() {
       </div>
       <nav class="channels" aria-label="Channels">${channelMarkup()}</nav>
       <div class="topbar-right">
+        <span class="sync-stamp" title="${escapeHtml(lastUpdatedText())}">${escapeHtml(lastUpdatedText())}</span>
         <button class="header-button" data-action="refresh-all" ${state.loading || state.stateLoading || state.reportsLoading ? 'disabled' : ''}>Refresh</button>
         <select class="header-select" data-action="priority">${priorityOptions()}</select>
         <label class="search-box">
@@ -510,7 +537,7 @@ function l2Markup() {
       <div class="column-head">
         <div class="column-title"><b>L2</b> Raw messages</div>
         <h1>${escapeHtml(channel?.channel || 'No channel')}</h1>
-        <p>${channel?.message_count || 0} total messages · ${state.messages.length} loaded</p>
+        <p>${channel?.message_count || 0} total messages · ${state.messages.length} loaded · ${escapeHtml(lastUpdatedText())}</p>
       </div>
       <div class="column-body">
         ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
@@ -683,6 +710,7 @@ app.addEventListener('change', async (event) => {
   state.priority = value;
   state.messages = [];
   state.nextCursor = null;
+  state.latestMessageTimestamp = null;
   await loadMessages({ reset: true });
 });
 
@@ -702,6 +730,7 @@ app.addEventListener('click', async (event) => {
     state.activeChannelId = target.dataset.channelId;
     state.messages = [];
     state.nextCursor = null;
+    state.latestMessageTimestamp = null;
     state.channelState = null;
     state.stateError = '';
     state.reports = [];

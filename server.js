@@ -414,6 +414,13 @@ async function getMessages(params) {
       values.push(priority);
       where.push(`priority = $${values.length}`);
     }
+    const metaResult = await pool.query(
+      `select max(timestamp)::text as latest_message_timestamp
+       from messages
+       ${where.length ? `where ${where.join(' and ')}` : ''}`,
+      values
+    );
+    const latestMessageTimestamp = metaResult.rows[0]?.latest_message_timestamp || null;
     values.push(limit + 1);
     const limitParam = `$${values.length}`;
     values.push(offset);
@@ -429,7 +436,11 @@ async function getMessages(params) {
     const rows = result.rows.slice(0, limit);
     return {
       status: 200,
-      body: { messages: rows, next_cursor: result.rows.length > limit ? String(offset + limit) : null }
+      body: {
+        messages: rows,
+        next_cursor: result.rows.length > limit ? String(offset + limit) : null,
+        latest_message_timestamp: latestMessageTimestamp
+      }
     };
   }
 
@@ -437,12 +448,14 @@ async function getMessages(params) {
   if (channelId) list = list.filter((message) => message.channel_id === channelId);
   if (priority) list = list.filter((message) => message.priority === priority);
   list = [...list].sort((a, b) => b.timestamp - a.timestamp || b.external_id.localeCompare(a.external_id));
+  const latestMessageTimestamp = list[0]?.timestamp || null;
   const page = list.slice(offset, offset + limit + 1);
   return {
     status: 200,
     body: {
       messages: page.slice(0, limit),
-      next_cursor: page.length > limit ? String(offset + limit) : null
+      next_cursor: page.length > limit ? String(offset + limit) : null,
+      latest_message_timestamp: latestMessageTimestamp
     }
   };
 }
