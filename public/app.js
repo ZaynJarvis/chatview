@@ -15,11 +15,9 @@ const state = {
   loading: false,
   error: '',
   latestMessageTimestamp: null,
-  search: '',
-  priority: '',
+  priority: 'high',
   activeLayer: 'L2',
   starred: new Set(JSON.parse(localStorage.getItem('chatview.starred') || '[]')),
-  archived: new Set(JSON.parse(localStorage.getItem('chatview.archived') || '[]')),
   sourceMessages: new Map(),
   highlightedMessageId: '',
   lightbox: '',
@@ -192,7 +190,6 @@ function avatarClass(message) {
 
 function persistSets() {
   localStorage.setItem('chatview.starred', JSON.stringify([...state.starred]));
-  localStorage.setItem('chatview.archived', JSON.stringify([...state.archived]));
 }
 
 async function api(path) {
@@ -359,7 +356,6 @@ async function focusSourceMessage(externalId) {
   }
 
   state.priority = '';
-  state.search = '';
   state.highlightedMessageId = externalId;
   state.activeLayer = 'L2';
   render();
@@ -380,12 +376,7 @@ function activeReport() {
 }
 
 function visibleMessages() {
-  const search = state.search.trim().toLowerCase();
-  return state.messages.filter((message) => {
-    if (!search) return true;
-    return [message.channel, message.username, message.content, message.priority]
-      .some((value) => String(value || '').toLowerCase().includes(search));
-  });
+  return state.messages;
 }
 
 function channelMarkup() {
@@ -399,18 +390,21 @@ function channelMarkup() {
   `).join('');
 }
 
-function priorityOptions() {
-  const values = [
-    ['', 'All priority'],
+function priorityFilterMarkup() {
+  const filters = [
     ['high', 'High'],
-    ['normal', 'Normal'],
-    ['low', 'Low'],
-    ['ignore', 'Ignore']
+    ['', 'All']
   ];
-  const selected = state.priority;
-  return values.map(([value, label]) =>
-    `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`
-  ).join('');
+  return `
+    <div class="priority-filter" aria-label="Message priority filter">
+      ${filters.map(([value, label]) => `
+        <button class="header-button ${state.priority === value ? 'on' : ''}"
+          data-action="priority-filter" data-priority="${escapeHtml(value)}">
+          ${escapeHtml(label)}
+        </button>
+      `).join('')}
+    </div>
+  `;
 }
 
 async function refreshAll() {
@@ -434,10 +428,10 @@ function topbarMarkup() {
       <div class="topbar-right">
         <span class="sync-stamp" title="${escapeHtml(lastUpdatedText())}">${escapeHtml(lastUpdatedText())}</span>
         <button class="header-button" data-action="refresh-all" ${state.loading || state.stateLoading || state.reportsLoading ? 'disabled' : ''}>Refresh</button>
-        <select class="header-select" data-action="priority">${priorityOptions()}</select>
-        <label class="search-box">
+        ${priorityFilterMarkup()}
+        <label class="search-box disabled" aria-disabled="true" title="Search is disabled">
           <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5"></circle><path d="m11 11 3 3"></path></svg>
-          <input type="search" value="${escapeHtml(state.search)}" placeholder="Search loaded messages" data-action="search">
+          <input type="search" value="" placeholder="Search" disabled>
         </label>
       </div>
     </header>
@@ -465,7 +459,6 @@ function tabsMarkup() {
 
 function messageMarkup(message) {
   const isStarred = state.starred.has(message.external_id);
-  const isArchived = state.archived.has(message.external_id);
   const contentImageUrls = new Set(markdownImageUrls(message.content));
   const imageHref = safeHref(message.image_url);
   const showStandaloneImage = imageHref && !contentImageUrls.has(imageHref);
@@ -473,7 +466,6 @@ function messageMarkup(message) {
     'message',
     `priority-${message.priority}`,
     isStarred ? 'starred' : '',
-    isArchived ? 'archived' : '',
     state.highlightedMessageId === message.external_id ? 'highlighted' : ''
   ].filter(Boolean).join(' ');
 
@@ -482,7 +474,9 @@ function messageMarkup(message) {
       <div class="message-main">
         <div class="message-head">
           <strong>${escapeHtml(message.username)}</strong>
-          <span class="priority-badge ${message.priority}">${escapeHtml(priorityLabel(message.priority))}</span>
+          <button class="star-button ${isStarred ? 'on' : ''}" title="Favorite" data-action="star" data-external-id="${escapeHtml(message.external_id)}">
+            ${isStarred ? '★' : '☆'}
+          </button>
         </div>
         ${message.content ? `<div class="message-text message-markdown">${markdownMarkup(message.content)}</div>` : '<p class="message-text muted">No text content</p>'}
         ${showStandaloneImage ? `
@@ -491,10 +485,6 @@ function messageMarkup(message) {
             <span>image_url</span>
           </button>
         ` : ''}
-      </div>
-      <div class="message-actions">
-        <button title="Star" data-action="star" data-external-id="${escapeHtml(message.external_id)}">${isStarred ? '★' : '☆'}</button>
-        <button title="Archive" data-action="archive" data-external-id="${escapeHtml(message.external_id)}">${isArchived ? '↩' : '⌫'}</button>
       </div>
     </article>
   `;
@@ -696,24 +686,6 @@ function render() {
   });
 }
 
-app.addEventListener('input', (event) => {
-  const action = event.target?.dataset?.action;
-  if (action === 'search') {
-    state.search = event.target.value;
-    render();
-  }
-});
-
-app.addEventListener('change', async (event) => {
-  if (event.target?.dataset?.action !== 'priority') return;
-  const value = event.target.value;
-  state.priority = value;
-  state.messages = [];
-  state.nextCursor = null;
-  state.latestMessageTimestamp = null;
-  await loadMessages({ reset: true });
-});
-
 app.addEventListener('scroll', async (event) => {
   const scroller = event.target;
   if (!(scroller instanceof HTMLElement) || !scroller.matches('.l2 .column-body')) return;
@@ -753,6 +725,14 @@ app.addEventListener('click', async (event) => {
     await refreshAll();
   }
 
+  if (action === 'priority-filter') {
+    state.priority = target.dataset.priority || '';
+    state.messages = [];
+    state.nextCursor = null;
+    state.latestMessageTimestamp = null;
+    await loadMessages({ reset: true });
+  }
+
   if (action === 'refresh-state') {
     await loadChannelState();
   }
@@ -778,14 +758,6 @@ app.addEventListener('click', async (event) => {
     render();
   }
 
-  if (action === 'archive') {
-    event.stopPropagation();
-    const id = target.dataset.externalId;
-    state.archived.has(id) ? state.archived.delete(id) : state.archived.add(id);
-    persistSets();
-    render();
-  }
-
   if (action === 'lightbox') {
     event.stopPropagation();
     state.lightbox = target.dataset.src;
@@ -802,10 +774,6 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && state.lightbox) {
     state.lightbox = '';
     render();
-  }
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-    event.preventDefault();
-    document.querySelector('[data-action="search"]')?.focus();
   }
 });
 
