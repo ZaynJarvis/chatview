@@ -65,7 +65,7 @@ PM2 is not currently used for this daemon. Cron is preferred because the worker 
 
 ## GitHub Visibility
 
-The GitHub repo is private unless explicitly changed. Before making it public, verify both the current tree and git history for secrets. Early private history contained a real API key value in `.env.example`; rotate the key or scrub history before changing repo visibility.
+The GitHub repo is public. Before it was opened, history was force-pushed to replace the early real API key value in `.env.example` and README examples with `replace_me`. Continue to verify both the current tree and git history for secrets before adding public-facing examples or changing deployment docs.
 
 ## Lessons Learned
 
