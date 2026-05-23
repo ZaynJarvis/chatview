@@ -397,18 +397,14 @@ function channelMarkup() {
 }
 
 function priorityFilterMarkup() {
-  const filters = [
-    ['high', 'High'],
-    ['', 'All']
-  ];
+  const isHighOnly = state.priority === 'high';
   return `
     <div class="priority-filter" aria-label="Message priority filter">
-      ${filters.map(([value, label]) => `
-        <button class="header-button ${state.priority === value ? 'on' : ''}"
-          data-action="priority-filter" data-priority="${escapeHtml(value)}">
-          ${escapeHtml(label)}
-        </button>
-      `).join('')}
+      <button class="header-button ${isHighOnly ? 'on' : ''}"
+        data-action="priority-filter" aria-pressed="${isHighOnly ? 'true' : 'false'}"
+        title="${isHighOnly ? 'Showing high priority only' : 'Showing high and low priority'}">
+        High
+      </button>
     </div>
   `;
 }
@@ -751,7 +747,7 @@ app.addEventListener('click', async (event) => {
   }
 
   if (action === 'priority-filter') {
-    state.priority = target.dataset.priority || '';
+    state.priority = state.priority === 'high' ? '' : 'high';
     state.messages = [];
     state.nextCursor = null;
     state.latestMessageTimestamp = null;

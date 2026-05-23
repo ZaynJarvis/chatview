@@ -14,7 +14,7 @@ The project uses the Baoyu Infographic pattern: pick an information layout and a
 - L2 consumes the message API contract.
 - L1 consumes saved channel state snapshots from `/api/channel-state`.
 - L0 consumes saved research reports from `/api/reports`.
-- Channel filter, high/all priority filter, local favorites, image thumbnails, lightbox, and message detail fetch are implemented. Search is present but disabled pending a clearer workflow.
+- Channel filter, High-only toggle, local favorites, image thumbnails, lightbox, and message detail fetch are implemented. Search is present but disabled pending a clearer workflow.
 - `server.js`: Node HTTP server with Postgres support on Railway and an empty in-memory fallback locally.
 - `POST /api/messages`: authenticated daemon ingestion endpoint for cleaned messages.
 - `POST /api/images`: authenticated image upload endpoint, backed by Postgres when `DATABASE_URL` is configured.
