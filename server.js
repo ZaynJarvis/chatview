@@ -866,7 +866,13 @@ async function handler(req, res) {
         json(res, 401, { error: 'unauthorized' });
         return;
       }
-      const storedName = await receiveImage(req);
+      let storedName;
+      try {
+        storedName = await receiveImage(req);
+      } catch (error) {
+        badRequest(res, error.message);
+        return;
+      }
       const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
       const host = req.headers.host || `localhost:${port}`;
       json(res, 200, { image_url: `${proto}://${host}/uploads/${storedName}` });
