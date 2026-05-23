@@ -293,7 +293,7 @@ function channelMarkup() {
 
 function priorityOptions() {
   const values = [
-    ['', 'Signal'],
+    ['', 'Signal only'],
     ['all', 'All'],
     ['high', 'High'],
     ['normal', 'Normal'],
@@ -306,6 +306,15 @@ function priorityOptions() {
   ).join('');
 }
 
+async function refreshAll() {
+  await loadChannels();
+  await Promise.all([
+    loadMessages({ reset: true }),
+    loadChannelState(),
+    loadReports()
+  ]);
+}
+
 function topbarMarkup() {
   return `
     <header class="topbar">
@@ -316,7 +325,9 @@ function topbarMarkup() {
       </div>
       <nav class="channels" aria-label="Channels">${channelMarkup()}</nav>
       <div class="topbar-right">
-        <span class="live-dot">API LIVE</span>
+        <button class="header-button" data-action="refresh-all" ${state.loading || state.stateLoading || state.reportsLoading ? 'disabled' : ''}>Refresh</button>
+        <select class="header-select" data-action="priority">${priorityOptions()}</select>
+        <button class="header-button ${state.includeLow ? 'on' : ''}" data-action="toggle-low">${state.includeLow ? 'All' : 'Signal'}</button>
         <label class="search-box">
           <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5"></circle><path d="m11 11 3 3"></path></svg>
           <input type="search" value="${escapeHtml(state.search)}" placeholder="Search loaded messages" data-action="search">
@@ -362,7 +373,6 @@ function messageMarkup(message) {
       <div class="message-main">
         <div class="message-head">
           <strong>${escapeHtml(message.username)}</strong>
-          <time title="${escapeHtml(new Date(message.timestamp * 1000).toISOString())}">${escapeHtml(formatTime(message.timestamp))}</time>
           <span class="priority-badge ${message.priority}">${escapeHtml(priorityLabel(message.priority))}</span>
         </div>
         ${message.content ? `<p class="message-text">${escapeHtml(message.content)}</p>` : '<p class="message-text muted">No text content</p>'}
@@ -392,11 +402,6 @@ function l2Markup() {
         <div class="column-title"><b>L2</b> Raw messages</div>
         <h1>${escapeHtml(channel?.channel || 'No channel')}</h1>
         <p>${channel?.message_count || 0} total messages · ${state.messages.length} loaded</p>
-      </div>
-      <div class="toolbar">
-        <select class="select" data-action="priority">${priorityOptions()}</select>
-        <button class="${state.includeLow ? 'on' : ''}" data-action="toggle-low">${state.includeLow ? 'Showing low/ignore' : 'Hiding low/ignore'}</button>
-        <span class="toolbar-note">${visible.length} visible</span>
       </div>
       <div class="column-body">
         ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
@@ -433,7 +438,6 @@ function detailMarkup() {
         <dt>external_id</dt><dd><code>${escapeHtml(message.external_id)}</code></dd>
         <dt>channel</dt><dd>${escapeHtml(message.channel)}</dd>
         <dt>channel_id</dt><dd><code>${escapeHtml(message.channel_id)}</code></dd>
-        <dt>timestamp</dt><dd>${escapeHtml(formatTime(message.timestamp))} · ${escapeHtml(String(message.timestamp))}</dd>
         <dt>priority</dt><dd><span class="priority-badge ${message.priority}">${escapeHtml(priorityLabel(message.priority))}</span></dd>
       </dl>
       <div class="detail-content">${message.content ? escapeHtml(message.content) : '<span class="muted">No text content</span>'}</div>
@@ -453,10 +457,9 @@ function l1Markup() {
       <div class="column-head">
         <div class="column-title"><b>L1</b> Aggregated insights</div>
         <h1>${snapshot ? 'Channel state' : 'No L1 state'}</h1>
-        <p>${escapeHtml(channel?.channel || 'selected channel')}${snapshot ? ` · ${escapeHtml(formatWindow(snapshot.window_start, snapshot.window_end))}` : ''}</p>
+        <p>${escapeHtml(channel?.channel || 'selected channel')}</p>
       </div>
       <div class="toolbar">
-        <button data-action="refresh-state">Refresh</button>
         <span class="toolbar-note">${snapshot ? `${cards.length} cards · ${sourceCount} sources` : 'waiting for API state'}</span>
       </div>
       <div class="column-body">
@@ -511,8 +514,7 @@ function l0Markup() {
         <p>${escapeHtml(channel?.channel || 'selected channel')} · ${state.reports.length} loaded</p>
       </div>
       <div class="toolbar">
-        <button data-action="refresh-reports">Refresh</button>
-        <span class="toolbar-note">${selected ? escapeHtml(formatWindow(selected.window_start, selected.window_end)) : 'latest first'}</span>
+        <span class="toolbar-note">${state.reports.length} reports</span>
       </div>
       <div class="column-body">
         ${state.reportsError ? `<div class="error">${escapeHtml(state.reportsError)}</div>` : ''}
@@ -529,9 +531,7 @@ function l0Markup() {
             ${state.reports.map((report) => `
               <button class="report-item ${selected?.report_id === report.report_id ? 'active' : ''}"
                 data-action="select-report" data-report-id="${escapeHtml(report.report_id)}">
-                <span class="report-window">${escapeHtml(formatWindow(report.window_start, report.window_end))}</span>
                 <strong>${escapeHtml(report.title || 'Untitled report')}</strong>
-                <span>${escapeHtml(report.summary || 'No summary')}</span>
               </button>
             `).join('')}
           </div>
@@ -634,12 +634,19 @@ app.addEventListener('click', async (event) => {
   }
 
   if (action === 'toggle-low') {
+    const hadServerPriorityFilter = !!state.priority;
     state.includeLow = !state.includeLow;
-    render();
+    state.priority = '';
+    if (hadServerPriorityFilter) await loadMessages({ reset: true });
+    else render();
   }
 
   if (action === 'load-more') {
     await loadMessages();
+  }
+
+  if (action === 'refresh-all') {
+    await refreshAll();
   }
 
   if (action === 'refresh-state') {
