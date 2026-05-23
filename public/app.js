@@ -20,6 +20,8 @@ const state = {
   activeLayer: 'L2',
   starred: new Set(JSON.parse(localStorage.getItem('chatview.starred') || '[]')),
   archived: new Set(JSON.parse(localStorage.getItem('chatview.archived') || '[]')),
+  sourceMessages: new Map(),
+  highlightedMessageId: '',
   lightbox: ''
 };
 
@@ -41,6 +43,11 @@ function escapeHtml(value) {
 
 function priorityLabel(priority) {
   return priorityMeta[priority]?.label || priority || 'Normal';
+}
+
+function compactText(value, fallback = 'No text content', max = 96) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim() || fallback;
+  return text.length > max ? `${text.slice(0, max - 1)}...` : text;
 }
 
 function safeHref(value) {
@@ -130,6 +137,51 @@ async function api(path) {
   return body;
 }
 
+function cacheMessages(messages = []) {
+  for (const message of messages) {
+    if (message?.external_id) state.sourceMessages.set(message.external_id, message);
+  }
+}
+
+function sourceIdsForState(snapshot) {
+  const ids = new Set();
+  for (const card of snapshot?.cards || []) {
+    for (const id of card.message_ids || []) {
+      if (id) ids.add(id);
+    }
+  }
+  return [...ids];
+}
+
+function messageById(externalId) {
+  return state.messages.find((message) => message.external_id === externalId)
+    || state.sourceMessages.get(externalId)
+    || null;
+}
+
+async function fetchMessage(externalId) {
+  const data = await api(`/api/messages/${encodeURIComponent(externalId)}`);
+  cacheMessages([data.message]);
+  return data.message;
+}
+
+async function hydrateSourceMessages(snapshot) {
+  const missing = sourceIdsForState(snapshot).filter((id) => !messageById(id));
+  await Promise.allSettled(missing.map(async (id) => {
+    try {
+      await fetchMessage(id);
+    } catch {
+      state.sourceMessages.set(id, {
+        external_id: id,
+        username: 'Unavailable',
+        content: 'Message not found',
+        priority: 'ignore',
+        missing: true
+      });
+    }
+  }));
+}
+
 async function loadChannels() {
   const data = await api('/api/channels');
   state.channels = data.channels || [];
@@ -155,6 +207,7 @@ async function loadMessages({ reset = false } = {}) {
   try {
     const data = await api(messageQuery(reset));
     state.messages = reset ? data.messages || [] : [...state.messages, ...(data.messages || [])];
+    cacheMessages(data.messages || []);
     state.nextCursor = data.next_cursor || null;
   } catch (error) {
     state.error = error.message;
@@ -177,6 +230,7 @@ async function loadChannelState() {
     const params = new URLSearchParams({ channel_id: state.activeChannelId, level: 'L1' });
     const data = await api(`/api/channel-state?${params.toString()}`);
     state.channelState = data.state || null;
+    if (state.channelState) await hydrateSourceMessages(state.channelState);
   } catch (error) {
     state.channelState = null;
     state.stateError = error.message;
@@ -206,6 +260,35 @@ async function loadReports() {
     state.reportsLoading = false;
     render();
   }
+}
+
+async function focusSourceMessage(externalId) {
+  let message = messageById(externalId);
+  try {
+    if (!message || message.missing) message = await fetchMessage(externalId);
+  } catch (error) {
+    state.stateError = error.message;
+    render();
+    return;
+  }
+
+  if (!state.messages.some((item) => item.external_id === externalId)) {
+    state.messages = [message, ...state.messages]
+      .sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0));
+  }
+
+  state.priority = '';
+  if (message.priority === 'low' || message.priority === 'ignore') state.includeLow = true;
+  state.search = '';
+  state.highlightedMessageId = externalId;
+  state.activeLayer = 'L2';
+  render();
+
+  requestAnimationFrame(() => {
+    const row = [...document.querySelectorAll('[data-message-id]')]
+      .find((element) => element.dataset.messageId === externalId);
+    row?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  });
 }
 
 function activeChannel() {
@@ -314,11 +397,12 @@ function messageMarkup(message) {
     'message',
     `priority-${message.priority}`,
     isStarred ? 'starred' : '',
-    isArchived ? 'archived' : ''
+    isArchived ? 'archived' : '',
+    state.highlightedMessageId === message.external_id ? 'highlighted' : ''
   ].filter(Boolean).join(' ');
 
   return `
-    <article class="${classes}">
+    <article class="${classes}" data-message-id="${escapeHtml(message.external_id)}">
       <div class="message-main">
         <div class="message-head">
           <strong>${escapeHtml(message.username)}</strong>
@@ -337,6 +421,34 @@ function messageMarkup(message) {
         <button title="Archive" data-action="archive" data-external-id="${escapeHtml(message.external_id)}">${isArchived ? '↩' : '⌫'}</button>
       </div>
     </article>
+  `;
+}
+
+function sourceMessageMarkup(externalId) {
+  const message = messageById(externalId);
+  if (!message) return '<button class="source-link loading" disabled>Loading source message...</button>';
+
+  const fallback = message.image_url ? 'Image message' : 'No text content';
+  return `
+    <button class="source-link ${message.missing ? 'missing' : ''}"
+      data-action="source-message" data-external-id="${escapeHtml(externalId)}"
+      ${message.missing ? 'disabled' : ''}>
+      <strong>${escapeHtml(message.username || 'Unknown')}</strong>
+      <span>${escapeHtml(compactText(message.content, fallback))}</span>
+    </button>
+  `;
+}
+
+function cardSourcesMarkup(card) {
+  const ids = card.message_ids || [];
+  if (!ids.length) return '';
+  const visibleIds = ids.slice(0, 4);
+  const hiddenCount = ids.length - visibleIds.length;
+  return `
+    <div class="source-list">
+      ${visibleIds.map(sourceMessageMarkup).join('')}
+      ${hiddenCount > 0 ? `<span class="source-more">+${hiddenCount} more source messages</span>` : ''}
+    </div>
   `;
 }
 
@@ -405,6 +517,7 @@ function l1Markup() {
                     <span class="priority-badge ${escapeHtml(card.priority || 'normal')}">${escapeHtml(priorityLabel(card.priority || 'normal'))}</span>
                   </div>
                   <p>${escapeHtml(card.body || '')}</p>
+                  ${cardSourcesMarkup(card)}
                 </article>
               `).join('')}
             </div>
@@ -532,6 +645,7 @@ app.addEventListener('click', async (event) => {
     state.reports = [];
     state.reportsError = '';
     state.selectedReportId = '';
+    state.highlightedMessageId = '';
     await Promise.all([
       loadMessages({ reset: true }),
       loadChannelState(),
@@ -571,6 +685,10 @@ app.addEventListener('click', async (event) => {
   if (action === 'select-report') {
     state.selectedReportId = target.dataset.reportId;
     render();
+  }
+
+  if (action === 'source-message') {
+    await focusSourceMessage(target.dataset.externalId);
   }
 
   if (action === 'star') {
