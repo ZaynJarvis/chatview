@@ -721,10 +721,8 @@ code { font-family: var(--font-mono); font-size: .92em; }
   }
   .column.active-layer { display: flex; }
   .message-actions { opacity: 1; }
-  .toolbar { overflow-x: auto; }
-  .toolbar-note { display: none; }
-  .l1 > .column-head,
-  .l1 > .toolbar {
+  .column > .column-head,
+  .column > .toolbar {
     display: none;
   }
 }
