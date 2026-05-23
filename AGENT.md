@@ -59,7 +59,7 @@ Important files in that directory:
 
 Rotation currently applies only to `cron.log`: default 10 MB per file and 10 retained files. Message JSONL files and `codex_outputs/` are append-only because they are used for audit, replay, and backfill. Add an explicit retention/compaction pass before scaling this to high-volume history.
 
-Cloud storage is Postgres when `DATABASE_URL` is set. Without it, `server.js` falls back to process memory. Image uploads are stored in `UPLOAD_DIR`, or `/tmp/chatview-uploads` by default, so uploaded image URLs should be treated as ephemeral unless persistent storage is configured.
+Cloud storage is Postgres when `DATABASE_URL` is set. Messages, L1 states, L0 reports, and uploaded image bytes are stored there. Without Postgres, `server.js` falls back to process memory plus local `UPLOAD_DIR`/`/tmp` image files, which is only suitable for local development.
 
 PM2 is not currently used for this daemon. Cron is preferred because the worker is an hourly one-shot batch job. Only switch to PM2 if the daemon becomes a long-running listener or needs PM2 dashboard/process management.
 
@@ -76,7 +76,7 @@ The GitHub repo is public. Before it was opened, history was force-pushed to rep
 - Batch L2 filtering for history. Single-message Codex calls are acceptable for hourly runs, but historical backfill needs `DECISION_BATCH_SIZE`.
 - L1 is cheap enough for hourly history; L0 is not. Backfill messages first, then L1-only, then generate L0 only for high-signal cards.
 - Keep local logs bounded. The cron wrapper rotates `cron.log` on every run.
-- Treat cloud image storage as ephemeral. The current `/api/images` endpoint stores under `/tmp`; message text and state must still be useful when images disappear.
+- Keep image upload before message upload. Local chatlog image markdown must be resolved through `chatlog http call`, uploaded to `/api/images`, and rewritten to cloud URLs before `POST /api/messages`.
 - Avoid secrets in Git. `daemon/cloud.env.example` is committed; real `cloud.env` lives under ignored `daemon/exports/...`.
 
 ## Safe Verification

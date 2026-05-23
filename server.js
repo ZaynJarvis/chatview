@@ -55,6 +55,7 @@ const imageTypes = new Map([
 let memoryMessages = [];
 let memoryChannelStates = [];
 let memoryReports = [];
+let memoryUploads = new Map();
 let pool = null;
 let dbReady = false;
 
@@ -355,6 +356,14 @@ async function initDb() {
       )
     `);
     await client.query('create index if not exists reports_latest_idx on reports (level, channel_id, window_end desc, updated_at desc)');
+    await client.query(`
+      create table if not exists uploaded_images (
+        stored_name text primary key,
+        content_type text not null,
+        data bytea not null,
+        created_at timestamptz not null default now()
+      )
+    `);
     dbReady = true;
   } finally {
     client.release();
@@ -697,9 +706,30 @@ async function receiveImage(req) {
 
   const ext = extForImage(type, filename);
   if (!ext) throw new Error('content type must be an image: jpeg, png, gif, webp, heic, or heif');
+  const storedType = {
+    '.jpg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.heic': 'image/heic',
+    '.heif': 'image/heif'
+  }[ext] || type || 'application/octet-stream';
 
-  await fs.mkdir(uploadsDir, { recursive: true });
   const storedName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
+  if (dbReady) {
+    await pool.query(
+      `insert into uploaded_images (stored_name, content_type, data)
+       values ($1, $2, $3)
+       on conflict (stored_name) do update set
+         content_type = excluded.content_type,
+         data = excluded.data`,
+      [storedName, storedType, buffer]
+    );
+    return storedName;
+  }
+
+  memoryUploads.set(storedName, { content_type: storedType, data: buffer });
+  await fs.mkdir(uploadsDir, { recursive: true });
   const filePath = path.join(uploadsDir, storedName);
   await fs.writeFile(filePath, buffer, { flag: 'wx' });
   return storedName;
@@ -751,6 +781,32 @@ async function serveUpload(res, pathname) {
   if (!basename || basename.includes('/') || basename.includes('\\')) {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
     res.end('Not found');
+    return;
+  }
+
+  if (dbReady) {
+    const result = await pool.query(
+      'select content_type, data from uploaded_images where stored_name = $1 limit 1',
+      [basename]
+    );
+    const stored = result.rows[0];
+    if (stored) {
+      res.writeHead(200, {
+        'content-type': stored.content_type,
+        'cache-control': 'public, max-age=31536000, immutable'
+      });
+      res.end(stored.data);
+      return;
+    }
+  }
+
+  const memoryUpload = memoryUploads.get(basename);
+  if (memoryUpload) {
+    res.writeHead(200, {
+      'content-type': memoryUpload.content_type,
+      'cache-control': 'public, max-age=86400'
+    });
+    res.end(memoryUpload.data);
     return;
   }
 

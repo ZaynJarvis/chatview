@@ -391,6 +391,16 @@ code { font-family: var(--font-mono); font-size: .92em; }
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+.message-markdown {
+  white-space: normal;
+}
+.message-markdown p {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+}
+.message-markdown p:last-child {
+  margin-bottom: 0;
+}
 .muted { color: var(--text-dim); }
 .thumb {
   max-width: 280px;
@@ -417,6 +427,21 @@ code { font-family: var(--font-mono); font-size: .92em; }
   background: rgba(0,0,0,.62);
   border-radius: 4px;
   font: 500 10px/1.4 var(--font-mono);
+}
+.markdown-thumb {
+  display: block;
+  margin: 6px 0;
+}
+.image-pending {
+  display: inline-block;
+  margin: 4px 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--text-dim);
+  background: var(--surface);
+  font: 600 11px/1.4 var(--font-mono);
+  text-transform: uppercase;
 }
 .message-actions {
   display: flex;

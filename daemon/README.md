@@ -14,7 +14,7 @@ The daemon uses `chatlog` CLI for collection, Codex for message filtering and st
 2. `process_three_groups_api_pipeline.py`
    - Drops animated stickers and animated image payloads before API calls.
    - Uses Codex to decide per message: `keep/delete` and `high/low`.
-   - Uploads supported images to `/api/images`.
+   - Uploads supported images to `/api/images` and rewrites local chatlog image markdown to cloud URLs.
    - Upserts kept messages to `/api/messages`.
    - Optionally builds L1 state and L0 reports.
 

@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,7 @@ KEY_SENDER_HINTS = [
 
 VALID_PRIORITIES = {"high", "low"}
 HTTP_USER_AGENT = "chatview-daemon/1.0"
+MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 
 
 class PreprocessDelete(Exception):
@@ -203,12 +205,63 @@ def select_image_key(raw):
         value = clean(raw.get(key))
         if value:
             candidates.append(value)
+    for key in ("image_url", "media_url"):
+        value = clean(raw.get(key))
+        image_key = chatlog_image_key_from_url(value)
+        if image_key:
+            candidates.append(image_key)
     candidates.extend(as_list(raw.get("image_keys")))
     candidates.extend(as_list(raw.get("media_keys")))
     if not candidates:
         return None
     simple = [item for item in candidates if "/" not in item]
     return simple[0] if simple else candidates[0]
+
+
+def chatlog_image_key_from_url(url):
+    raw = clean(url)
+    if not raw:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return None
+    if parsed.scheme and parsed.scheme not in {"http", "https"}:
+        return None
+    if parsed.hostname and parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return None
+    path = parsed.path or raw
+    marker = "/image/"
+    if marker not in path:
+        return None
+    key = path.split(marker, 1)[1]
+    return urllib.parse.unquote(key) if key else None
+
+
+def markdown_image_sources(content):
+    sources = []
+    for match in MARKDOWN_IMAGE_RE.finditer(clean_text(content)):
+        url = match.group(2).strip()
+        image_key = chatlog_image_key_from_url(url)
+        if image_key:
+            sources.append({"alt": match.group(1), "url": url, "image_key": image_key})
+    return sources
+
+
+def image_keys_for_message(raw):
+    keys = []
+    seen = set()
+
+    def add(value):
+        image_key = clean(value)
+        if image_key and image_key not in seen:
+            seen.add(image_key)
+            keys.append(image_key)
+
+    add(select_image_key(raw))
+    for source in markdown_image_sources(raw.get("content")):
+        add(source["image_key"])
+    return keys
 
 
 def preprocessing_delete_reason(raw):
@@ -244,14 +297,14 @@ def is_key_sender(username):
 
 
 def build_decision_prompt(msg, raw):
-    image_key = select_image_key(raw)
+    image_keys = image_keys_for_message(raw)
     key_sender = is_key_sender(msg["username"])
     payload = {
         "message": msg,
         "raw_type": clean_text(raw.get("type")),
         "raw_media_type": clean_text(raw.get("media_type")),
-        "has_image": bool(image_key),
-        "image_key": image_key,
+        "has_image": bool(image_keys),
+        "image_keys": image_keys,
         "is_key_sender": key_sender,
     }
     return f"""
@@ -274,14 +327,14 @@ Message payload:
 
 
 def decision_payload(msg, raw):
-    image_key = select_image_key(raw)
+    image_keys = image_keys_for_message(raw)
     prompt_msg = {**msg, "content": bounded_text(msg.get("content"), 1000)}
     return {
         "message": prompt_msg,
         "raw_type": clean_text(raw.get("type")),
         "raw_media_type": clean_text(raw.get("media_type")),
-        "has_image": bool(image_key),
-        "image_key": image_key,
+        "has_image": bool(image_keys),
+        "image_keys": image_keys,
         "is_key_sender": is_key_sender(msg["username"]),
     }
 
@@ -337,7 +390,7 @@ def normalize_decision(decision):
 def heuristic_decision(msg, raw):
     username = msg["username"]
     content = msg["content"].strip()
-    has_image = bool(select_image_key(raw))
+    has_image = bool(image_keys_for_message(raw))
     if is_key_sender(username):
         if not content and not has_image:
             return {"action": "delete", "priority": None, "reason": "key sender but empty message"}
@@ -620,11 +673,7 @@ def extension_for_mime(mime_type):
     }.get(mime_type, "bin")
 
 
-def upload_image(args, raw):
-    image_key = select_image_key(raw)
-    if not image_key or not args.cloud_img_endpoint:
-        return None
-    data = chatlog_download_image(args, image_key)
+def upload_image_data(args, data, source_label):
     if is_animated_image_data(data):
         raise PreprocessDelete("animated image detected before upload")
     mime_type = mime_type_for(data)
@@ -638,8 +687,51 @@ def upload_image(args, raw):
         _, response = post_image_json(args.cloud_img_endpoint, args.cloud_api_key, data, mime_type, filename, args.cloud_timeout)
     image_url = response.get("image_url")
     if not image_url:
-        raise RuntimeError(f"image upload response missing image_url for {image_key}: {response}")
+        raise RuntimeError(f"image upload response missing image_url for {source_label}: {response}")
     return image_url
+
+
+def upload_image_key(args, image_key):
+    if not image_key or not args.cloud_img_endpoint:
+        return None
+    data = chatlog_download_image(args, image_key)
+    return upload_image_data(args, data, image_key)
+
+
+def upload_image(args, raw):
+    return upload_image_key(args, select_image_key(raw))
+
+
+def prepare_message_images(args, raw, msg):
+    sources = markdown_image_sources(msg.get("content"))
+    raw_image_key = select_image_key(raw)
+    if args.cloud_msg_endpoint and (sources or raw_image_key) and not args.cloud_img_endpoint:
+        raise RuntimeError("CLOUD_IMG_ENDPOINT is required before posting image messages to cloud")
+
+    uploaded_by_key = {}
+    uploaded_urls = []
+
+    def upload_once(image_key):
+        if image_key not in uploaded_by_key:
+            uploaded_by_key[image_key] = upload_image_key(args, image_key)
+        image_url = uploaded_by_key[image_key]
+        if image_url and image_url not in uploaded_urls:
+            uploaded_urls.append(image_url)
+        return image_url
+
+    content = msg.get("content") or ""
+    for source in sources:
+        image_url = upload_once(source["image_key"])
+        if image_url:
+            content = content.replace(source["url"], image_url)
+
+    if raw_image_key and not sources:
+        upload_once(raw_image_key)
+
+    if uploaded_urls:
+        msg["image_url"] = uploaded_urls[0]
+    msg["content"] = content
+    return uploaded_urls
 
 
 def submit_message(args, msg):
@@ -652,8 +744,7 @@ def submit_message(args, msg):
 
 
 def refresh_snapshots(args):
-    messages = []
-    seen = set()
+    messages_by_id = {}
     if args.out.exists():
         with args.out.open("r", encoding="utf-8") as f:
             for line in f:
@@ -661,10 +752,10 @@ def refresh_snapshots(args):
                     continue
                 row = json.loads(line)
                 external_id = row.get("external_id")
-                if external_id in seen:
+                if not external_id:
                     continue
-                seen.add(external_id)
-                messages.append(row)
+                messages_by_id[external_id] = row
+    messages = list(messages_by_id.values())
     messages.sort(key=lambda row: (row.get("timestamp") or 0, row.get("external_id") or ""))
     save_json(args.api_snapshot, {"updated_at": now_iso(), "count": len(messages), "messages": messages})
 
@@ -713,18 +804,17 @@ def intelligence_window(args):
 def read_local_messages(path):
     if not path.exists():
         return []
-    seen = set()
-    rows = []
+    rows_by_id = {}
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             row = json.loads(line)
             external_id = row.get("external_id")
-            if external_id in seen:
+            if not external_id:
                 continue
-            seen.add(external_id)
-            rows.append(row)
+            rows_by_id[external_id] = row
+    rows = list(rows_by_id.values())
     rows.sort(key=lambda row: (row.get("timestamp") or 0, row.get("external_id") or ""))
     return rows
 
@@ -1286,34 +1376,36 @@ def process(args):
                     removed += 1
                 else:
                     msg["priority"] = decision["priority"]
-                    image_key = select_image_key(raw)
-                    if image_key:
-                        try:
-                            msg["image_url"] = upload_image(args, raw)
-                        except PreprocessDelete as exc:
-                            decision = {"action": "delete", "priority": None, "reason": str(exc)}
-                            decision_row = {
-                                "external_id": msg["external_id"],
-                                "decided_at": now_iso(),
-                                "decision": decision,
-                                "username": msg["username"],
-                                "channel_id": msg["channel_id"],
-                                "channel": msg["channel"],
-                                "stage": "preprocess",
-                            }
-                            append_jsonl(args.decisions, decision_row)
-                            append_jsonl(args.rejected, {**decision_row, "message": msg})
-                            deleted.add(msg["external_id"])
-                            removed += 1
-                            continue
-                        except Exception as exc:
-                            append_jsonl(args.errors, {
-                                "at": now_iso(),
-                                "external_id": msg["external_id"],
-                                "stage": "image_upload",
-                                "error": str(exc),
-                                "image_key": image_key,
-                            })
+                    try:
+                        prepare_message_images(args, raw, msg)
+                    except PreprocessDelete as exc:
+                        decision = {"action": "delete", "priority": None, "reason": str(exc)}
+                        decision_row = {
+                            "external_id": msg["external_id"],
+                            "decided_at": now_iso(),
+                            "decision": decision,
+                            "username": msg["username"],
+                            "channel_id": msg["channel_id"],
+                            "channel": msg["channel"],
+                            "stage": "preprocess",
+                        }
+                        append_jsonl(args.decisions, decision_row)
+                        append_jsonl(args.rejected, {**decision_row, "message": msg})
+                        deleted.add(msg["external_id"])
+                        removed += 1
+                        continue
+                    except Exception as exc:
+                        failed += 1
+                        append_jsonl(args.errors, {
+                            "at": now_iso(),
+                            "external_id": msg["external_id"],
+                            "stage": "image_upload",
+                            "error": str(exc),
+                            "image_keys": image_keys_for_message(raw),
+                        })
+                        if args.stop_on_error:
+                            break
+                        continue
                     if not args.dry_run:
                         submit_result = submit_message(args, msg)
                         append_jsonl(args.submitted, {"at": now_iso(), "external_id": msg["external_id"], **submit_result})
@@ -1352,6 +1444,64 @@ def process(args):
         "preprocessed_deleted": preprocessed_deleted,
         "failed": failed,
     }
+
+
+def repair_local_image_markdown(args):
+    summary = {"scanned": 0, "repaired": 0, "failed": 0, "skipped": 0}
+    if args.dry_run or not args.repair_local_image_markdown:
+        return summary
+    if not args.cloud_msg_endpoint or not args.cloud_img_endpoint:
+        return summary
+
+    candidates = [
+        msg for msg in read_local_messages(args.out)
+        if markdown_image_sources(msg.get("content"))
+    ]
+    candidates.sort(key=lambda msg: (normalize_timestamp(msg.get("timestamp")), msg.get("external_id") or ""), reverse=True)
+    if args.image_repair_limit:
+        candidates = candidates[:args.image_repair_limit]
+
+    for msg in candidates:
+        summary["scanned"] += 1
+        fixed = dict(msg)
+        try:
+            prepare_message_images(args, {"content": fixed.get("content")}, fixed)
+            if fixed.get("content") == msg.get("content") and fixed.get("image_url") == msg.get("image_url"):
+                summary["skipped"] += 1
+                continue
+            submit_result = submit_message(args, fixed)
+            append_jsonl(args.submitted, {
+                "at": now_iso(),
+                "external_id": fixed["external_id"],
+                "stage": "image_markdown_repair",
+                **submit_result,
+            })
+            summary["repaired"] += 1
+        except PreprocessDelete as exc:
+            summary["skipped"] += 1
+            append_jsonl(args.errors, {
+                "at": now_iso(),
+                "external_id": msg.get("external_id"),
+                "stage": "image_markdown_repair",
+                "skipped": True,
+                "error": str(exc),
+            })
+        except Exception as exc:
+            summary["failed"] += 1
+            error = str(exc)
+            lower_error = error.lower()
+            append_jsonl(args.errors, {
+                "at": now_iso(),
+                "external_id": msg.get("external_id"),
+                "stage": "image_markdown_repair",
+                "error": error,
+                "image_keys": image_keys_for_message({"content": msg.get("content")}),
+            })
+            if "connection refused" in lower_error or "dial tcp" in lower_error or args.stop_on_error:
+                break
+    if summary["repaired"]:
+        refresh_snapshots(args)
+    return summary
 
 
 def parse_args():
@@ -1420,6 +1570,9 @@ def parse_args():
     parser.add_argument("--skip-l0", dest="run_l0", action="store_false")
     parser.add_argument("--l1-max-messages", type=int, default=int(os.environ.get("L1_MAX_MESSAGES", "120")))
     parser.add_argument("--disable-cloud-previous-state", action="store_true", default=bool_env("DISABLE_CLOUD_PREVIOUS_STATE", False))
+    parser.add_argument("--repair-local-image-markdown", dest="repair_local_image_markdown", action="store_true", default=bool_env("REPAIR_LOCAL_IMAGE_MARKDOWN", True))
+    parser.add_argument("--skip-repair-local-image-markdown", dest="repair_local_image_markdown", action="store_false")
+    parser.add_argument("--image-repair-limit", type=int, default=int(os.environ.get("IMAGE_REPAIR_LIMIT", "30")))
     parser.add_argument("--skip-collect", action="store_true")
     parser.add_argument("--skip-processing", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -1447,11 +1600,13 @@ def main():
                 refresh_snapshots(args)
         else:
             summary = process(args)
+        image_repair = repair_local_image_markdown(args)
         intelligence = run_intelligence(args)
         print(
             f"{now_iso()} pipeline candidates={summary['candidates']} "
             f"kept={summary['kept']} deleted={summary['deleted']} "
-            f"preprocessed_deleted={summary['preprocessed_deleted']} failed={summary['failed']}"
+            f"preprocessed_deleted={summary['preprocessed_deleted']} failed={summary['failed']} "
+            f"image_repaired={image_repair['repaired']} image_repair_failed={image_repair['failed']}"
         )
         if intelligence["window_start"] is not None:
             print(
@@ -1460,7 +1615,7 @@ def main():
                 f"l1_failed={intelligence['l1']['failed']} l0_posted={intelligence['l0']['posted']} "
                 f"l0_skipped={intelligence['l0']['skipped']} l0_failed={intelligence['l0']['failed']}"
             )
-        failed = summary["failed"] + intelligence["l1"]["failed"] + intelligence["l0"]["failed"]
+        failed = summary["failed"] + image_repair["failed"] + intelligence["l1"]["failed"] + intelligence["l0"]["failed"]
         return 1 if failed and args.stop_on_error else 0
     finally:
         release_lock(args.lock)

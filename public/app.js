@@ -62,11 +62,45 @@ function safeHref(value) {
   return '';
 }
 
+function markdownImageUrls(value) {
+  const urls = [];
+  const pattern = /!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g;
+  for (const match of String(value || '').matchAll(pattern)) {
+    const href = safeHref(match[1]);
+    if (href) urls.push(href);
+  }
+  return urls;
+}
+
+function isLocalChatlogImageHref(value) {
+  try {
+    const url = new URL(value, window.location.origin);
+    return ['127.0.0.1', 'localhost'].includes(url.hostname) && url.pathname.includes('/image/');
+  } catch {
+    return false;
+  }
+}
+
+function markdownImageMarkup(alt, href) {
+  const safe = safeHref(href);
+  if (!safe) return '';
+  if (isLocalChatlogImageHref(safe)) {
+    return `<span class="image-pending">${escapeHtml(alt || 'image')} pending upload</span>`;
+  }
+  const label = alt || 'image';
+  return `
+    <button class="thumb markdown-thumb" data-action="lightbox" data-src="${escapeHtml(safe)}">
+      <img src="${escapeHtml(safe)}" alt="${escapeHtml(label)}">
+      <span>${escapeHtml(label)}</span>
+    </button>
+  `;
+}
+
 function inlineMarkdown(value) {
   return escapeHtml(value)
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (match, label, href) => {
+    .replace(/(^|[^!])\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (match, prefix, label, href) => {
       const safe = safeHref(href.replace(/&amp;/g, '&'));
-      return safe ? `<a href="${escapeHtml(safe)}" target="_blank" rel="noreferrer">${label}</a>` : label;
+      return safe ? `${prefix}<a href="${escapeHtml(safe)}" target="_blank" rel="noreferrer">${label}</a>` : `${prefix}${label}`;
     })
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -87,6 +121,13 @@ function markdownMarkup(markdown) {
     const line = rawLine.trim();
     if (!line) {
       flushList();
+      continue;
+    }
+
+    const image = line.match(/^!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)$/);
+    if (image) {
+      flushList();
+      parts.push(markdownImageMarkup(image[1] || 'image', image[2]));
       continue;
     }
 
@@ -398,6 +439,9 @@ function tabsMarkup() {
 function messageMarkup(message) {
   const isStarred = state.starred.has(message.external_id);
   const isArchived = state.archived.has(message.external_id);
+  const contentImageUrls = new Set(markdownImageUrls(message.content));
+  const imageHref = safeHref(message.image_url);
+  const showStandaloneImage = imageHref && !contentImageUrls.has(imageHref);
   const classes = [
     'message',
     `priority-${message.priority}`,
@@ -413,10 +457,10 @@ function messageMarkup(message) {
           <strong>${escapeHtml(message.username)}</strong>
           <span class="priority-badge ${message.priority}">${escapeHtml(priorityLabel(message.priority))}</span>
         </div>
-        ${message.content ? `<p class="message-text">${escapeHtml(message.content)}</p>` : '<p class="message-text muted">No text content</p>'}
-        ${message.image_url ? `
-          <button class="thumb" data-action="lightbox" data-src="${escapeHtml(message.image_url)}">
-            <img src="${escapeHtml(message.image_url)}" alt="">
+        ${message.content ? `<div class="message-text message-markdown">${markdownMarkup(message.content)}</div>` : '<p class="message-text muted">No text content</p>'}
+        ${showStandaloneImage ? `
+          <button class="thumb" data-action="lightbox" data-src="${escapeHtml(imageHref)}">
+            <img src="${escapeHtml(imageHref)}" alt="">
             <span>image_url</span>
           </button>
         ` : ''}

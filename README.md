@@ -17,7 +17,7 @@ The project uses the Baoyu Infographic pattern: pick an information layout and a
 - Channel filter, priority filter, search across loaded messages, star/archive local state, image thumbnails, lightbox, and message detail fetch are implemented.
 - `server.js`: Node HTTP server with Postgres support on Railway and an empty in-memory fallback locally.
 - `POST /api/messages`: authenticated daemon ingestion endpoint for cleaned messages.
-- `POST /api/images`: authenticated ephemeral image upload endpoint for the current deploy session.
+- `POST /api/images`: authenticated image upload endpoint, backed by Postgres when `DATABASE_URL` is configured.
 - `POST /api/channel-state`: authenticated L1 channel state upsert endpoint.
 - `POST /api/reports`: authenticated L0 report upsert endpoint.
 - `daemon/`: local `chatlog` CLI sync daemon, Codex filtering/state/report pipeline, cron wrapper, schemas, and backfill tooling.
@@ -186,7 +186,7 @@ Content-Type: application/json
 
 ## Image Upload API
 
-Images are stored on the Railway container filesystem under `/tmp`, so they are ephemeral and can disappear after a redeploy/restart. This is intended for current deploy-session display only.
+Images are stored in Postgres when `DATABASE_URL` is configured. Without Postgres, the server falls back to process memory plus `UPLOAD_DIR` or `/tmp/chatview-uploads`, which is only suitable for local development.
 
 Binary upload:
 
