@@ -721,7 +721,7 @@ const mime = new Map([
 ]);
 
 async function serveStatic(req, res, pathname) {
-  const requested = pathname === '/' ? '/ChatLens.html' : pathname;
+  const requested = pathname === '/' ? '/ChatView.html' : pathname;
   const safePath = path.normalize(decodeURIComponent(requested)).replace(/^(\.\.[/\\])+/, '');
   const filePath = path.join(publicDir, safePath);
   if (!filePath.startsWith(publicDir)) {

@@ -1,6 +1,6 @@
 # ChatView
 
-ChatLens L2 viewer and cleaned-message ingestion API.
+ChatView L2 viewer and cleaned-message ingestion API.
 
 ## System Infographic
 
@@ -10,7 +10,7 @@ The project uses the Baoyu Infographic pattern: pick an information layout and a
 
 ## What Is Implemented
 
-- `public/ChatLens.html`: three-column ChatLens UI.
+- `public/ChatView.html`: three-column ChatView UI.
 - L2 consumes the message API contract.
 - L1 consumes saved channel state snapshots from `/api/channel-state`.
 - L0 consumes saved research reports from `/api/reports`.
@@ -34,7 +34,7 @@ CHATVIEW_API_KEY=dev_key npm start
 Open:
 
 ```text
-http://localhost:3000/ChatLens.html
+http://localhost:3000/ChatView.html
 ```
 
 ## Read API

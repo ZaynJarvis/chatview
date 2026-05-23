@@ -26,6 +26,43 @@ The API is the contract. Keep local daemon changes compatible with:
 
 Cron currently defaults to `RUN_L0=0`. Do not enable all-hour historical L0 generation by default; it is slow and creates too many reports.
 
+## Runtime State
+
+The active local cron entry is:
+
+```cron
+0 * * * * /Users/lululiang/chat_cloud/chatview/daemon/scripts/cron_follow_three_groups.sh
+```
+
+This user-level crontab survives machine reboot. Editing the shell or Python scripts changes the next run without restarting cron. Only schedule changes require updating crontab.
+
+The active local daemon output directory is:
+
+```text
+/Users/lululiang/chat_cloud/chatview/daemon/exports/follow_three_groups_jsonl
+```
+
+Important files in that directory:
+
+- `new_messages.jsonl`: raw target-group messages collected from `chatlog`.
+- `api_messages.jsonl`: cleaned/kept messages assembled for `POST /api/messages`.
+- `api_messages.json`: snapshot of the local kept message set.
+- `codex_decisions.jsonl`: L2 keep/delete/priority decisions.
+- `rejected_messages.jsonl`: messages deleted by preprocessing or L2 filtering.
+- `submitted_messages.jsonl`: cloud POST results.
+- `l1_states.jsonl`: L1 channel-state payloads/results.
+- `l0_reports.jsonl`: L0 report payloads/results.
+- `pipeline_errors.jsonl`: recoverable pipeline errors.
+- `codex_outputs/`: raw Codex outputs for L2/L1/L0.
+- `state.json` and `pipeline_state.json`: collection and pipeline dedupe state.
+- `cloud.env`: local secret config. It must stay ignored and uncommitted.
+
+Rotation currently applies only to `cron.log`: default 10 MB per file and 10 retained files. Message JSONL files and `codex_outputs/` are append-only because they are used for audit, replay, and backfill. Add an explicit retention/compaction pass before scaling this to high-volume history.
+
+Cloud storage is Postgres when `DATABASE_URL` is set. Without it, `server.js` falls back to process memory. Image uploads are stored in `UPLOAD_DIR`, or `/tmp/chatview-uploads` by default, so uploaded image URLs should be treated as ephemeral unless persistent storage is configured.
+
+PM2 is not currently used for this daemon. Cron is preferred because the worker is an hourly one-shot batch job. Only switch to PM2 if the daemon becomes a long-running listener or needs PM2 dashboard/process management.
+
 ## Lessons Learned
 
 - Keep collection CLI-only. The user explicitly wants `chatlog` access through `chatlog http call`, not direct local HTTP from daemon code.

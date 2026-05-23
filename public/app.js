@@ -352,9 +352,9 @@ async function refreshAll() {
 function topbarMarkup() {
   return `
     <header class="topbar">
-      <div class="brand" aria-label="ChatLens">
+      <div class="brand" aria-label="ChatView">
         <span class="brand-mark"></span>
-        <span>ChatLens</span>
+        <span>ChatView</span>
         <small>L2 live</small>
       </div>
       <nav class="channels" aria-label="Channels">${channelMarkup()}</nav>

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">ChatView L2/L1/L0 pipeline infographic</title>
-  <desc id="desc">A technical infographic showing WeChat messages flowing through the local daemon, Codex filtering, L1 state cards, L0 reports, API storage, and the ChatLens frontend.</desc>
+  <desc id="desc">A technical infographic showing WeChat messages flowing through the local daemon, Codex filtering, L1 state cards, L0 reports, API storage, and the ChatView frontend.</desc>
   <defs>
     <linearGradient id="header" x1="0" x2="1" y1="0" y2="0">
       <stop offset="0%" stop-color="#0f766e"/>
@@ -33,7 +33,7 @@
   <rect class="bg" x="0" y="0" width="1200" height="760"/>
   <rect class="header" x="0" y="0" width="1200" height="116"/>
   <text class="title" x="48" y="52">ChatView Intelligence Pipeline</text>
-  <text class="subtitle" x="48" y="84">WeChat groups -> local daemon -> L2 filtering -> L1 topic cards -> selective L0 research -> ChatLens</text>
+  <text class="subtitle" x="48" y="84">WeChat groups -> local daemon -> L2 filtering -> L1 topic cards -> selective L0 research -> ChatView</text>
   <text class="small" x="930" y="50" fill="#e0f2fe">Baoyu infographic style</text>
   <text class="small" x="930" y="74" fill="#e0f2fe">layout: process flow</text>
 
