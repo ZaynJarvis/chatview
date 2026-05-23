@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "markdown", "cards", "reason"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["post", "skip"]
+    },
+    "markdown": {
+      "type": "string",
+      "maxLength": 3000
+    },
+    "cards": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "body", "priority", "message_ids"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "priority": {
+            "type": "string",
+            "enum": ["high", "low"]
+          },
+          "message_ids": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 220
+            }
+          }
+        }
+      }
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 240
+    }
+  }
+}

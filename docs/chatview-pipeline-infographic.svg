@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">ChatView L2/L1/L0 pipeline infographic</title>
+  <desc id="desc">A technical infographic showing WeChat messages flowing through the local daemon, Codex filtering, L1 state cards, L0 reports, API storage, and the ChatLens frontend.</desc>
+  <defs>
+    <linearGradient id="header" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#0f766e"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f172a" flood-opacity="0.16"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .header { fill: url(#header); }
+      .title { font: 700 34px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+      .subtitle { font: 500 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #dbeafe; }
+      .card { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.2; rx: 16; filter: url(#shadow); }
+      .cardTitle { font: 700 19px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .body { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .small { font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+      .pill { fill: #e0f2fe; stroke: #7dd3fc; stroke-width: 1; rx: 11; }
+      .pillText { font: 700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #075985; }
+      .line { stroke: #334155; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .mutedLine { stroke: #94a3b8; stroke-width: 1.5; stroke-dasharray: 6 6; fill: none; marker-end: url(#arrow); }
+      .metric { font: 800 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .metricLabel { font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748b; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="760"/>
+  <rect class="header" x="0" y="0" width="1200" height="116"/>
+  <text class="title" x="48" y="52">ChatView Intelligence Pipeline</text>
+  <text class="subtitle" x="48" y="84">WeChat groups -> local daemon -> L2 filtering -> L1 topic cards -> selective L0 research -> ChatLens</text>
+  <text class="small" x="930" y="50" fill="#e0f2fe">Baoyu infographic style</text>
+  <text class="small" x="930" y="74" fill="#e0f2fe">layout: process flow</text>
+
+  <rect class="card" x="48" y="156" width="220" height="145"/>
+  <text class="cardTitle" x="72" y="190">1. Sources</text>
+  <text class="body" x="72" y="220">芝士美股① / ②</text>
+  <text class="body" x="72" y="244">Slock 中文社区</text>
+  <text class="body" x="72" y="268">new messages only</text>
+  <rect class="pill" x="72" y="280" width="130" height="26"/>
+  <text class="pillText" x="88" y="298">chatlog CLI only</text>
+
+  <rect class="card" x="340" y="156" width="240" height="145"/>
+  <text class="cardTitle" x="364" y="190">2. Daemon</text>
+  <text class="body" x="364" y="220">append JSONL raw rows</text>
+  <text class="body" x="364" y="244">stateful dedupe</text>
+  <text class="body" x="364" y="268">cron-safe lock</text>
+  <rect class="pill" x="364" y="280" width="118" height="26"/>
+  <text class="pillText" x="381" y="298">hourly sync</text>
+
+  <rect class="card" x="652" y="156" width="240" height="145"/>
+  <text class="cardTitle" x="676" y="190">3. Preprocess</text>
+  <text class="body" x="676" y="220">drop GIF/sticker noise</text>
+  <text class="body" x="676" y="244">reject animated images</text>
+  <text class="body" x="676" y="268">upload valid media</text>
+  <rect class="pill" x="676" y="280" width="128" height="26"/>
+  <text class="pillText" x="693" y="298">image_url later</text>
+
+  <rect class="card" x="964" y="156" width="188" height="145"/>
+  <text class="cardTitle" x="988" y="190">4. Cloud API</text>
+  <text class="body" x="988" y="220">Postgres upserts</text>
+  <text class="body" x="988" y="244">messages / state</text>
+  <text class="body" x="988" y="268">reports / images</text>
+  <rect class="pill" x="988" y="280" width="92" height="26"/>
+  <text class="pillText" x="1005" y="298">idempotent</text>
+
+  <path class="line" d="M268 228 H330"/>
+  <path class="line" d="M580 228 H642"/>
+  <path class="line" d="M892 228 H954"/>
+
+  <rect class="card" x="92" y="380" width="280" height="175"/>
+  <text class="cardTitle" x="116" y="414">L2: Filter + Priority</text>
+  <text class="body" x="116" y="444">Codex decides each raw message:</text>
+  <text class="body" x="116" y="470">keep / delete</text>
+  <text class="body" x="116" y="494">high / low priority</text>
+  <text class="body" x="116" y="518">external_id keeps replay safe</text>
+  <rect class="pill" x="116" y="532" width="138" height="26"/>
+  <text class="pillText" x="132" y="550">gpt-5.5 / low</text>
+
+  <rect class="card" x="460" y="380" width="280" height="175"/>
+  <text class="cardTitle" x="484" y="414">L1: Topic State</text>
+  <text class="body" x="484" y="444">Hourly channel state machine</text>
+  <text class="body" x="484" y="470">GET previous state</text>
+  <text class="body" x="484" y="494">merge last-hour messages</text>
+  <text class="body" x="484" y="518">POST short markdown cards</text>
+  <rect class="pill" x="484" y="532" width="138" height="26"/>
+  <text class="pillText" x="500" y="550">gpt-5.5 / low</text>
+
+  <rect class="card" x="828" y="380" width="280" height="175"/>
+  <text class="cardTitle" x="852" y="414">L0: Research</text>
+  <text class="body" x="852" y="444">Optional and selective</text>
+  <text class="body" x="852" y="470">5-minute markdown report</text>
+  <text class="body" x="852" y="494">reference links required</text>
+  <text class="body" x="852" y="518">trigger from high-signal L1</text>
+  <rect class="pill" x="852" y="532" width="174" height="26"/>
+  <text class="pillText" x="868" y="550">gpt-5.5 / low + search</text>
+
+  <path class="line" d="M372 468 H450"/>
+  <path class="line" d="M740 468 H818"/>
+  <path class="mutedLine" d="M600 380 V318 H1032 V370"/>
+  <path class="mutedLine" d="M232 380 V318 H1032"/>
+
+  <rect class="card" x="72" y="622" width="230" height="86"/>
+  <text class="metric" x="96" y="660">2036</text>
+  <text class="metricLabel" x="96" y="684">cleaned messages loaded</text>
+
+  <rect class="card" x="344" y="622" width="230" height="86"/>
+  <text class="metric" x="368" y="660">78</text>
+  <text class="metricLabel" x="368" y="684">historical L1 states posted</text>
+
+  <rect class="card" x="616" y="622" width="230" height="86"/>
+  <text class="metric" x="640" y="660">7</text>
+  <text class="metricLabel" x="640" y="684">selective L0 reports posted</text>
+
+  <rect class="card" x="888" y="622" width="240" height="86"/>
+  <text class="metric" x="912" y="660">RUN_L0=0</text>
+  <text class="metricLabel" x="912" y="684">cron default: avoid report spam</text>
+</svg>

@@ -2,6 +2,12 @@
 
 ChatLens L2 viewer and cleaned-message ingestion API.
 
+## System Infographic
+
+The project uses the Baoyu Infographic pattern: pick an information layout and a visual style, then compress the system into a dense visual summary. This diagram uses a process-flow layout with a technical schematic style.
+
+![ChatView intelligence pipeline](docs/chatview-pipeline-infographic.svg)
+
 ## What Is Implemented
 
 - `public/ChatLens.html`: three-column ChatLens UI.
@@ -14,6 +20,7 @@ ChatLens L2 viewer and cleaned-message ingestion API.
 - `POST /api/images`: authenticated ephemeral image upload endpoint for the current deploy session.
 - `POST /api/channel-state`: authenticated L1 channel state upsert endpoint.
 - `POST /api/reports`: authenticated L0 report upsert endpoint.
+- `daemon/`: local `chatlog` CLI sync daemon, Codex filtering/state/report pipeline, cron wrapper, schemas, and backfill tooling.
 
 No mock or seed messages are bundled in the repo.
 
@@ -21,7 +28,7 @@ No mock or seed messages are bundled in the repo.
 
 ```sh
 npm install
-CHATVIEW_API_KEY=replace_me npm start
+CHATVIEW_API_KEY=dev_key npm start
 ```
 
 Open:
@@ -217,3 +224,50 @@ The app expects Railway to provide:
 - `DATABASE_URL` from Railway Postgres
 - `CHATVIEW_API_KEY`
 - `PORT` from Railway
+
+## Local Daemon
+
+Daemon code lives in `daemon/` so the cloud API, frontend, and local sync contract stay versioned together.
+
+```sh
+cd daemon
+mkdir -p exports/follow_three_groups_jsonl
+cp cloud.env.example exports/follow_three_groups_jsonl/cloud.env
+chmod 600 exports/follow_three_groups_jsonl/cloud.env
+```
+
+Set `CLOUD_API_KEY` in `exports/follow_three_groups_jsonl/cloud.env`.
+
+Hourly cron:
+
+```cron
+0 * * * * /path/to/chatview/daemon/scripts/cron_follow_three_groups.sh
+```
+
+The daemon expects local `chatlog` to be running:
+
+```sh
+chatlog http call --endpoint health --show-status=false
+```
+
+Cron defaults:
+
+- `RUN_L1=1`
+- `RUN_L0=0`
+- `DECISION_BATCH_SIZE=20`
+- `CODEX_MODEL=gpt-5.5`
+- `CODEX_REASONING_EFFORT=low`
+
+## Model Settings
+
+| Layer | Job | Codex command | Model | Thinking |
+| --- | --- | --- | --- | --- |
+| L2 | Message filtering and `high/low` priority labeling | `codex exec` | `gpt-5.5` | `low` |
+| L1 | Hourly topic-state markdown cards | `codex exec` | `gpt-5.5` | `low` |
+| L0 | Optional research report with reference links | `codex --search exec` | `gpt-5.5` | `low` |
+
+L0 is intentionally off in cron. Run it selectively for high-signal L1 cards; all-hour L0 history is slow and creates low-value reports.
+
+## References
+
+- Baoyu Infographic: https://hermes-agent.nousresearch.com/docs/zh-Hans/user-guide/skills/bundled/creative/creative-baoyu-infographic

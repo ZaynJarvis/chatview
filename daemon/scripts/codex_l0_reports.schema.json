@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "reports", "reason"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["post", "skip"]
+    },
+    "reports": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "summary",
+          "markdown",
+          "topics",
+          "references",
+          "source_state_ids",
+          "source_message_ids"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "markdown": {
+            "type": "string",
+            "maxLength": 12000
+          },
+          "topics": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "string",
+              "maxLength": 40
+            }
+          },
+          "references": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["title", "url"],
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "maxLength": 120
+                },
+                "url": {
+                  "type": "string",
+                  "maxLength": 500
+                }
+              }
+            }
+          },
+          "source_state_ids": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 220
+            }
+          },
+          "source_message_ids": {
+            "type": "array",
+            "maxItems": 40,
+            "items": {
+              "type": "string",
+              "maxLength": 220
+            }
+          }
+        }
+      }
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 240
+    }
+  }
+}

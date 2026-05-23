@@ -5,3 +5,7 @@ node_modules/
 npm-debug.log*
 .DS_Store
 *.tmp
+daemon/exports/
+daemon/*.env
+daemon/**/*.env
+!daemon/cloud.env.example

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "priority", "reason"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["keep", "delete"]
+    },
+    "priority": {
+      "type": ["string", "null"],
+      "enum": ["high", "low", null]
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 240
+    }
+  }
+}
