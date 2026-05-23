@@ -14,7 +14,7 @@ The daemon uses `chatlog` CLI for collection, Codex for message filtering and st
 2. `process_three_groups_api_pipeline.py`
    - Drops animated stickers and animated image payloads before API calls.
    - Uses Codex to decide per message: `keep/delete` and `high/low`.
-   - Uploads supported images to `/api/images` and rewrites local chatlog image markdown to cloud URLs.
+   - Uploads the largest usable local chatlog image candidate to `/api/images` and rewrites local chatlog image markdown to cloud URLs.
    - Upserts kept messages to `/api/messages`.
    - Optionally builds L1 state and L0 reports.
 
@@ -54,11 +54,12 @@ All daemon Codex stages currently share:
 
 - Model: `gpt-5.5`
 - Reasoning effort: `low`
+- L1 patch retries: `2`
 
 Stage differences:
 
 - L2 message filtering and priority marking uses `codex exec` with `codex_message_decision*.schema.json`.
-- L1 topic state uses `codex exec` with `codex_l1_state.schema.json`.
+- L1 topic state uses `codex exec` with `codex_l1_state.schema.json`. The model can only return search/replace instructions against the current L1 card document with `match: "single"`; each search must match exactly once, and failed patches are retried with the executor error.
 - L0 research uses `codex --search exec` with `codex_l0_reports.schema.json`.
 
 Cron defaults to `RUN_L0=1`, so L0 is invoked after hourly L1 output. The L0 prompt is selective and should return `skip` for thin or stale topics.

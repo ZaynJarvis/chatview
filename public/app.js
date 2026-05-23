@@ -60,6 +60,12 @@ function formatTimestamp(value) {
   }).format(new Date(seconds * 1000));
 }
 
+function timestampDateTime(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return '';
+  return new Date(seconds * 1000).toISOString();
+}
+
 function lastUpdatedText() {
   const label = formatTimestamp(state.latestMessageTimestamp);
   return label ? `Last updated ${label}` : 'Last updated --';
@@ -418,7 +424,7 @@ async function refreshAll() {
 
 function topbarMarkup() {
   return `
-    <header class="topbar">
+    <header class="topbar" data-action="scroll-latest" title="Jump to latest messages">
       <div class="brand" aria-label="ChatView">
         <span class="brand-mark"></span>
         <span>ChatView</span>
@@ -462,6 +468,8 @@ function messageMarkup(message) {
   const contentImageUrls = new Set(markdownImageUrls(message.content));
   const imageHref = safeHref(message.image_url);
   const showStandaloneImage = imageHref && !contentImageUrls.has(imageHref);
+  const timestamp = formatTimestamp(message.timestamp);
+  const dateTime = timestampDateTime(message.timestamp);
   const classes = [
     'message',
     `priority-${message.priority}`,
@@ -473,7 +481,10 @@ function messageMarkup(message) {
     <article class="${classes}" data-message-id="${escapeHtml(message.external_id)}">
       <div class="message-main">
         <div class="message-head">
-          <strong>${escapeHtml(message.username)}</strong>
+          <div class="message-author">
+            <strong>${escapeHtml(message.username)}</strong>
+            ${timestamp ? `<time class="message-time" datetime="${escapeHtml(dateTime)}">${escapeHtml(timestamp)}</time>` : ''}
+          </div>
           <button class="star-button ${isStarred ? 'on' : ''}" title="Favorite" data-action="star" data-external-id="${escapeHtml(message.external_id)}">
             ${isStarred ? '★' : '☆'}
           </button>
@@ -686,6 +697,15 @@ function render() {
   });
 }
 
+function scrollToLatestMessages() {
+  state.activeLayer = 'L2';
+  state.forceL2ScrollTop = 0;
+  render();
+  requestAnimationFrame(() => {
+    document.querySelector('.l2 .column-body')?.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
 app.addEventListener('scroll', async (event) => {
   const scroller = event.target;
   if (!(scroller instanceof HTMLElement) || !scroller.matches('.l2 .column-body')) return;
@@ -697,6 +717,11 @@ app.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-action]');
   if (!target) return;
   const action = target.dataset.action;
+
+  if (action === 'scroll-latest') {
+    scrollToLatestMessages();
+    return;
+  }
 
   if (action === 'channel') {
     state.activeChannelId = target.dataset.channelId;

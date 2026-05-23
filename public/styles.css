@@ -396,11 +396,23 @@ code { font-family: var(--font-mono); font-size: .92em; }
   gap: 10px;
   margin-bottom: 2px;
 }
+.message-author {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
 .message-head strong {
   min-width: 0;
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-time {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font: 500 11px/1 var(--font-mono);
   white-space: nowrap;
 }
 .star-button {

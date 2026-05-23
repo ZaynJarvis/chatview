@@ -257,16 +257,17 @@ Cron defaults:
 - `DECISION_BATCH_SIZE=20`
 - `CODEX_MODEL=gpt-5.5`
 - `CODEX_REASONING_EFFORT=low`
+- `L1_PATCH_RETRIES=2`
 
 ## Model Settings
 
 | Layer | Job | Codex command | Model | Thinking |
 | --- | --- | --- | --- | --- |
 | L2 | Message filtering and `high/low` priority labeling | `codex exec` | `gpt-5.5` | `low` |
-| L1 | Hourly topic-state markdown cards | `codex exec` | `gpt-5.5` | `low` |
+| L1 | Hourly topic-state search/replace patches | `codex exec` | `gpt-5.5` | `low` |
 | L0 | Selective research report with reference links | `codex --search exec` | `gpt-5.5` | `low` |
 
-Hourly cron triggers the L0 stage after L1. The L0 model should return `skip` unless the latest L1 cards are high-signal and research-worthy; avoid all-hour historical L0 backfills.
+L1 no longer lets the model rewrite the whole state. The model returns search/replace instructions against the current L1 card document with `match: "single"` only; the executor requires each search to match exactly one block and retries with the error if a patch fails. Hourly cron triggers the L0 stage after L1. The L0 model should return `skip` unless the latest L1 cards are high-signal and research-worthy; avoid all-hour historical L0 backfills.
 
 ## References
 

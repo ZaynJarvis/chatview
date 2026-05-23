@@ -33,6 +33,14 @@ KEY_SENDER_HINTS = [
 VALID_PRIORITIES = {"high", "low"}
 HTTP_USER_AGENT = "chatview-daemon/1.0"
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+L1_EMPTY_DOCUMENT = "<!-- L1_STATE_EMPTY -->"
+L1_CARD_START = "<!-- L1_CARD_START -->"
+L1_CARD_END = "<!-- L1_CARD_END -->"
+L1_CARD_RE = re.compile(
+    rf"{re.escape(L1_CARD_START)}\s*(.*?)\s*{re.escape(L1_CARD_END)}",
+    re.DOTALL,
+)
+L1_MAX_CARDS = 80
 
 
 class PreprocessDelete(Exception):
@@ -199,23 +207,36 @@ def as_list(value):
     return [single] if single else []
 
 
+def split_image_key_candidates(value):
+    candidates = []
+    for item in as_list(value):
+        for part in item.split(","):
+            part = part.strip()
+            if part and part not in candidates:
+                candidates.append(part)
+    return candidates
+
+
 def select_image_key(raw):
     candidates = []
     for key in ("image_key", "media_key"):
         value = clean(raw.get(key))
         if value:
-            candidates.append(value)
+            candidates.extend(split_image_key_candidates(value))
     for key in ("image_url", "media_url"):
         value = clean(raw.get(key))
         image_key = chatlog_image_key_from_url(value)
         if image_key:
-            candidates.append(image_key)
-    candidates.extend(as_list(raw.get("image_keys")))
-    candidates.extend(as_list(raw.get("media_keys")))
+            candidates.extend(split_image_key_candidates(image_key))
+    for value in as_list(raw.get("image_keys")) + as_list(raw.get("media_keys")):
+        candidates.extend(split_image_key_candidates(value))
     if not candidates:
         return None
-    simple = [item for item in candidates if "/" not in item]
-    return simple[0] if simple else candidates[0]
+    deduped = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return ",".join(deduped)
 
 
 def chatlog_image_key_from_url(url):
@@ -691,11 +712,36 @@ def upload_image_data(args, data, source_label):
     return image_url
 
 
+def chatlog_download_best_image(args, image_key):
+    candidates = split_image_key_candidates(image_key)
+    if not candidates:
+        raise RuntimeError("empty image key")
+
+    best = None
+    errors = []
+    for candidate in candidates:
+        try:
+            data = chatlog_download_image(args, candidate)
+            mime_type = mime_type_for(data)
+            if not mime_type.startswith("image/"):
+                errors.append(f"{candidate}: unsupported payload {mime_type}")
+                continue
+            if best is None or len(data) > len(best[0]):
+                best = (data, candidate)
+        except Exception as exc:
+            errors.append(f"{candidate}: {exc}")
+
+    if best is not None:
+        return best
+    detail = "; ".join(errors[:4]) if errors else "no candidates"
+    raise RuntimeError(f"no usable image payload for {image_key}: {detail}")
+
+
 def upload_image_key(args, image_key):
     if not image_key or not args.cloud_img_endpoint:
         return None
-    data = chatlog_download_image(args, image_key)
-    return upload_image_data(args, data, image_key)
+    data, selected_key = chatlog_download_best_image(args, image_key)
+    return upload_image_data(args, data, selected_key)
 
 
 def upload_image(args, raw):
@@ -947,7 +993,103 @@ def get_channel_state(args, channel_id, level):
     return extract_state_response(data)
 
 
-def build_l1_prompt(group, messages, previous_state, window_start, window_end):
+def l1_card_field(value):
+    return clean_text(value).replace("\r", " ").replace("\n", " ").strip()
+
+
+def cards_to_l1_document(cards):
+    blocks = []
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        title = l1_card_field(card.get("title"))
+        body = l1_card_field(card.get("body"))
+        if not title or not body:
+            continue
+        priority = clean_text(card.get("priority")).lower()
+        if priority not in VALID_PRIORITIES:
+            priority = "low"
+        message_ids = []
+        for message_id in card.get("message_ids") or []:
+            clean_id = clean(message_id)
+            if clean_id and clean_id not in message_ids:
+                message_ids.append(clean_id)
+        blocks.append(
+            "\n".join([
+                L1_CARD_START,
+                f"title: {title}",
+                f"priority: {priority}",
+                f"message_ids: {', '.join(message_ids)}",
+                f"body: {body}",
+                L1_CARD_END,
+            ])
+        )
+    return "\n\n".join(blocks) if blocks else L1_EMPTY_DOCUMENT
+
+
+def l1_document_from_state(previous_state):
+    if not isinstance(previous_state, dict):
+        return L1_EMPTY_DOCUMENT
+    cards = previous_state.get("cards")
+    if isinstance(cards, list) and cards:
+        return cards_to_l1_document(cards)
+    return L1_EMPTY_DOCUMENT
+
+
+def parse_l1_card_block(block):
+    fields = {}
+    for raw_line in block.splitlines():
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        key = key.strip().lower()
+        if key in {"title", "priority", "message_ids", "body"}:
+            fields[key] = value.strip()
+
+    title = bounded_text(fields.get("title"), 18)
+    body = bounded_text(fields.get("body"), max(8, 50 - len(title)))
+    priority = clean_text(fields.get("priority")).lower()
+    if priority not in VALID_PRIORITIES:
+        priority = "low"
+    message_ids = []
+    for message_id in fields.get("message_ids", "").split(","):
+        clean_id = clean(message_id)
+        if clean_id and clean_id not in message_ids:
+            message_ids.append(clean_id)
+
+    if not title or not body:
+        return None
+    return {
+        "title": title,
+        "body": body,
+        "priority": priority,
+        "message_ids": message_ids[:8],
+    }
+
+
+def l1_document_to_cards(document):
+    text = clean_text(document)
+    if not text or text == L1_EMPTY_DOCUMENT:
+        return []
+
+    cards = []
+    for match in L1_CARD_RE.finditer(text):
+        card = parse_l1_card_block(match.group(1))
+        if card:
+            cards.append(card)
+        if len(cards) >= L1_MAX_CARDS:
+            break
+
+    if not cards:
+        raise ValueError("patched L1 document contains no valid L1_CARD blocks")
+    return cards
+
+
+def markdown_for_l1_cards(cards):
+    return "\n".join(f"- **{card['title']}** {card['body']}" for card in cards)
+
+
+def build_l1_prompt(group, messages, previous_state, current_document, window_start, window_end, patch_error=None):
     payload = {
         "channel": group,
         "window": {
@@ -957,6 +1099,8 @@ def build_l1_prompt(group, messages, previous_state, window_start, window_end):
             "end_iso": iso_for_timestamp(window_end),
         },
         "previous_state": previous_state,
+        "current_l1_document": current_document,
+        "previous_patch_error": patch_error,
         "messages": [prompt_message_view(msg) for msg in messages],
     }
     return f"""
@@ -965,17 +1109,32 @@ You maintain L1 channel state for a WeChat intelligence feed.
 Return JSON only matching the provided schema.
 
 Goal:
-- Merge previous_state with the last-hour filtered messages.
+- Update current_l1_document with the last-hour filtered messages.
 - Keep only durable, important topic state and key indexes.
-- Output compact markdown cards for the frontend.
+- Preserve existing useful cards unless a new message changes, supersedes, or makes them stale.
+- The executor will convert the patched document back into frontend cards.
 
 Rules:
 - action=skip if there is no meaningful state update.
-- Each card body must be <= 50 Chinese/English characters.
-- Use short card titles, preferably <= 20 characters.
-- cards[].message_ids must cite the source external_id values.
-- Preserve important context from previous_state only when it still matters.
-- Drop stale, duplicated, vague, or low-signal chatter.
+- You may only change L1 content through replacements[] search/replace instructions.
+- Each replacement must set match="single"; no other match mode is supported.
+- Each replacement.search must be an exact substring copied from current_l1_document.
+- The executor supports only single-match replacement. If search matches 0 or more than 1 block, it errors and you must retry.
+- Do not use regex, ellipses, or prose placeholders inside search/replace.
+- Prefer replacing one complete L1_CARD block at a time, including the card boundary comments.
+- To add a card to an empty document, search exactly "{L1_EMPTY_DOCUMENT}" and replace it with a full L1_CARD block.
+- To append a card to a non-empty document, search one unique existing L1_CARD block and replace it with itself plus the new block.
+- To update a card, search the full old block and replace it with the revised full block.
+- To delete a stale card, search the full old block and replace it with an empty string.
+- If two identical blocks exist, search a larger unique substring; if no unique substring exists, return skip with a reason.
+- Use exactly this card format in replacement text:
+  {L1_CARD_START}
+  title: short title, preferably <= 20 characters
+  priority: high or low
+  message_ids: comma-separated source external_id values
+  body: <= 50 Chinese/English characters
+  {L1_CARD_END}
+- Drop stale, duplicated, vague, or low-signal chatter by explicit replacement only.
 - Do not invent facts or external research here.
 
 Input:
@@ -989,34 +1148,75 @@ def normalize_l1_result(result):
     if action not in {"post", "skip"}:
         raise ValueError(f"invalid L1 action: {action}")
     if action == "skip":
-        return {"action": "skip", "markdown": "", "cards": [], "reason": reason}
+        return {"action": "skip", "replacements": [], "reason": reason}
 
-    cards = []
-    for card in result.get("cards") or []:
-        if not isinstance(card, dict):
-            continue
-        title = bounded_text(card.get("title"), 18)
-        body = bounded_text(card.get("body"), max(8, 50 - len(title)))
-        priority = card.get("priority") if card.get("priority") in VALID_PRIORITIES else "low"
-        message_ids = []
-        for message_id in card.get("message_ids") or []:
-            clean_id = clean(message_id)
-            if clean_id and clean_id not in message_ids:
-                message_ids.append(clean_id)
-        if title and body:
-            cards.append({
-                "title": title,
-                "body": body,
-                "priority": priority,
-                "message_ids": message_ids[:8],
+    replacements = []
+    for index, replacement in enumerate(result.get("replacements") or [], start=1):
+        if not isinstance(replacement, dict):
+            raise ValueError(f"replacement {index} must be an object")
+        search = replacement.get("search")
+        replace = replacement.get("replace")
+        match_mode = replacement.get("match")
+        if match_mode != "single":
+            raise ValueError(f"replacement {index} match must be single")
+        if not isinstance(search, str) or search == "":
+            raise ValueError(f"replacement {index} search must be a non-empty string")
+        if not isinstance(replace, str):
+            raise ValueError(f"replacement {index} replace must be a string")
+        replacements.append({"search": search, "replace": replace})
+
+    if not replacements:
+        raise ValueError("action=post requires at least one search/replace instruction")
+    return {"action": "post", "replacements": replacements, "reason": reason}
+
+
+def apply_l1_replacements(document, replacements):
+    patched = document
+    for index, replacement in enumerate(replacements, start=1):
+        search = replacement["search"]
+        replace = replacement["replace"]
+        count = patched.count(search)
+        if count != 1:
+            raise ValueError(f"replacement {index} search matched {count} block(s); expected exactly 1")
+        patched = patched.replace(search, replace, 1)
+    return patched.strip() or L1_EMPTY_DOCUMENT
+
+
+def generate_l1_state(args, group, messages, previous_state, current_document, window_start, window_end):
+    patch_error = None
+    for attempt in range(args.l1_patch_retries + 1):
+        prompt = build_l1_prompt(group, messages, previous_state, current_document, window_start, window_end, patch_error)
+        suffix = f"_attempt{attempt + 1}" if attempt else ""
+        out_path = args.codex_out_dir / f"l1_{safe_filename(group['channel_id'])}_{window_start}_{window_end}{suffix}.json"
+        try:
+            result = codex_exec_json(args, prompt, args.l1_schema, out_path, args.l1_codex_timeout)
+            normalized = normalize_l1_result(result)
+            if normalized["action"] == "skip":
+                return {"action": "skip", "markdown": "", "cards": [], "reason": normalized["reason"]}
+            patched_document = apply_l1_replacements(current_document, normalized["replacements"])
+            cards = l1_document_to_cards(patched_document)
+            if not cards:
+                return {"action": "skip", "markdown": "", "cards": [], "reason": "no valid L1 cards"}
+            return {
+                "action": "post",
+                "markdown": markdown_for_l1_cards(cards),
+                "cards": cards,
+                "reason": normalized["reason"],
+            }
+        except Exception as exc:
+            patch_error = str(exc)
+            append_jsonl(args.states_out, {
+                "at": now_iso(),
+                "mode": "l1_patch_retry" if attempt < args.l1_patch_retries else "l1_patch_failed",
+                "channel_id": group["channel_id"],
+                "level": "L1",
+                "window_start": window_start,
+                "window_end": window_end,
+                "attempt": attempt + 1,
+                "error": patch_error,
             })
-        if len(cards) >= 12:
-            break
-
-    if not cards:
-        return {"action": "skip", "markdown": "", "cards": [], "reason": reason or "no valid L1 cards"}
-    markdown = "\n".join(f"- **{card['title']}** {card['body']}" for card in cards)
-    return {"action": "post", "markdown": markdown, "cards": cards, "reason": reason}
+            if attempt >= args.l1_patch_retries:
+                raise
 
 
 def post_channel_state(args, payload):
@@ -1049,10 +1249,8 @@ def run_l1(args, all_messages, window_start, window_end, previous_states=None):
                 previous_state = None
             else:
                 previous_state = get_channel_state(args, group["channel_id"], "L1")
-            prompt = build_l1_prompt(group, messages, previous_state, window_start, window_end)
-            out_path = args.codex_out_dir / f"l1_{safe_filename(group['channel_id'])}_{window_start}_{window_end}.json"
-            result = codex_exec_json(args, prompt, args.l1_schema, out_path, args.l1_codex_timeout)
-            normalized = normalize_l1_result(result)
+            current_document = l1_document_from_state(previous_state)
+            normalized = generate_l1_state(args, group, messages, previous_state, current_document, window_start, window_end)
             if normalized["action"] == "skip":
                 append_jsonl(args.states_out, {
                     "at": now_iso(),
@@ -1569,6 +1767,7 @@ def parse_args():
     parser.add_argument("--run-l0", dest="run_l0", action="store_true", default=bool_env("RUN_L0", True))
     parser.add_argument("--skip-l0", dest="run_l0", action="store_false")
     parser.add_argument("--l1-max-messages", type=int, default=int(os.environ.get("L1_MAX_MESSAGES", "120")))
+    parser.add_argument("--l1-patch-retries", type=int, default=int(os.environ.get("L1_PATCH_RETRIES", "2")))
     parser.add_argument("--disable-cloud-previous-state", action="store_true", default=bool_env("DISABLE_CLOUD_PREVIOUS_STATE", False))
     parser.add_argument("--repair-local-image-markdown", dest="repair_local_image_markdown", action="store_true", default=bool_env("REPAIR_LOCAL_IMAGE_MARKDOWN", False))
     parser.add_argument("--skip-repair-local-image-markdown", dest="repair_local_image_markdown", action="store_false")
