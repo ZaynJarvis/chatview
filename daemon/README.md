@@ -61,7 +61,7 @@ Stage differences:
 - L1 topic state uses `codex exec` with `codex_l1_state.schema.json`.
 - L0 research uses `codex --search exec` with `codex_l0_reports.schema.json`.
 
-Cron defaults to `RUN_L0=0` because research reports are slower and should be generated selectively.
+Cron defaults to `RUN_L0=1`, so L0 is invoked after hourly L1 output. The L0 prompt is selective and should return `skip` for thin or stale topics.
 
 ## Backfill
 
@@ -85,4 +85,4 @@ python3 scripts/backfill_intelligence_windows.py \
   --l1-max-messages 80
 ```
 
-L0 reports should be run later on selected high-value L1 topics rather than across every historical hour.
+L0 reports should not be backfilled across every historical hour; run them only for selected high-value L1 topics when doing history.

@@ -347,23 +347,8 @@ code { font-family: var(--font-mono); font-size: .92em; }
   -webkit-overflow-scrolling: touch;
 }
 
-.hidden-banner, .load-more {
-  width: calc(100% - 36px);
-  margin: 12px 18px 4px;
-  padding: 8px 10px;
-  color: var(--text-dim);
-  background: var(--bg-elev);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius);
-  font: 500 11px/1.4 var(--font-mono);
-}
-.hidden-banner:hover, .load-more:hover { color: var(--accent); border-color: var(--accent-border); }
-.load-more {
-  margin-bottom: 80px;
-  border-style: solid;
-}
-
 .message-list { padding: 6px 0 12px; }
+.scroll-sentinel { height: 72px; }
 .message {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

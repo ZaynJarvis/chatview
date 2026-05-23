@@ -24,7 +24,7 @@ The API is the contract. Keep local daemon changes compatible with:
 | L1 | Hourly channel topic state as short cards | `codex exec` | `gpt-5.5` | `low` |
 | L0 | Selective research report with reference links | `codex --search exec` | `gpt-5.5` | `low` |
 
-Cron currently defaults to `RUN_L0=0`. Do not enable all-hour historical L0 generation by default; it is slow and creates too many reports.
+Cron currently defaults to `RUN_L0=1`, so L0 is invoked after each hourly L1 run. L0 must stay selective and return `skip` unless the L1 cards are high-signal; do not run broad historical L0 backfills by default.
 
 ## Runtime State
 

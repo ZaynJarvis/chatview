@@ -16,13 +16,13 @@ const state = {
   error: '',
   search: '',
   priority: '',
-  includeLow: false,
   activeLayer: 'L2',
   starred: new Set(JSON.parse(localStorage.getItem('chatview.starred') || '[]')),
   archived: new Set(JSON.parse(localStorage.getItem('chatview.archived') || '[]')),
   sourceMessages: new Map(),
   highlightedMessageId: '',
-  lightbox: ''
+  lightbox: '',
+  forceL2ScrollTop: null
 };
 
 const priorityMeta = {
@@ -143,6 +143,19 @@ function cacheMessages(messages = []) {
   }
 }
 
+function mergeMessages(existing = [], incoming = []) {
+  const byId = new Map();
+  for (const message of existing) {
+    if (message?.external_id) byId.set(message.external_id, message);
+  }
+  for (const message of incoming) {
+    if (message?.external_id) byId.set(message.external_id, message);
+  }
+  return [...byId.values()]
+    .sort((a, b) => (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0)
+      || String(b.external_id || '').localeCompare(String(a.external_id || '')));
+}
+
 function sourceIdsForState(snapshot) {
   const ids = new Set();
   for (const card of snapshot?.cards || []) {
@@ -200,13 +213,14 @@ function messageQuery(reset = false) {
 }
 
 async function loadMessages({ reset = false } = {}) {
-  if (state.loading) return;
+  if (state.loading || (!reset && !state.nextCursor)) return;
   state.loading = true;
   state.error = '';
+  if (reset) state.forceL2ScrollTop = 0;
   render();
   try {
     const data = await api(messageQuery(reset));
-    state.messages = reset ? data.messages || [] : [...state.messages, ...(data.messages || [])];
+    state.messages = reset ? data.messages || [] : mergeMessages(state.messages, data.messages || []);
     cacheMessages(data.messages || []);
     state.nextCursor = data.next_cursor || null;
   } catch (error) {
@@ -278,7 +292,6 @@ async function focusSourceMessage(externalId) {
   }
 
   state.priority = '';
-  if (message.priority === 'low' || message.priority === 'ignore') state.includeLow = true;
   state.search = '';
   state.highlightedMessageId = externalId;
   state.activeLayer = 'L2';
@@ -302,16 +315,10 @@ function activeReport() {
 function visibleMessages() {
   const search = state.search.trim().toLowerCase();
   return state.messages.filter((message) => {
-    if (!state.includeLow && !state.priority && (message.priority === 'low' || message.priority === 'ignore')) return false;
     if (!search) return true;
     return [message.channel, message.username, message.content, message.priority]
       .some((value) => String(value || '').toLowerCase().includes(search));
   });
-}
-
-function hiddenLowCount() {
-  if (state.includeLow || state.priority) return 0;
-  return state.messages.filter((message) => message.priority === 'low' || message.priority === 'ignore').length;
 }
 
 function channelMarkup() {
@@ -327,14 +334,13 @@ function channelMarkup() {
 
 function priorityOptions() {
   const values = [
-    ['', 'Signal only'],
-    ['all', 'All'],
+    ['', 'All priority'],
     ['high', 'High'],
     ['normal', 'Normal'],
     ['low', 'Low'],
     ['ignore', 'Ignore']
   ];
-  const selected = state.priority || (state.includeLow ? 'all' : '');
+  const selected = state.priority;
   return values.map(([value, label]) =>
     `<option value="${value}" ${selected === value ? 'selected' : ''}>${label}</option>`
   ).join('');
@@ -361,7 +367,6 @@ function topbarMarkup() {
       <div class="topbar-right">
         <button class="header-button" data-action="refresh-all" ${state.loading || state.stateLoading || state.reportsLoading ? 'disabled' : ''}>Refresh</button>
         <select class="header-select" data-action="priority">${priorityOptions()}</select>
-        <button class="header-button ${state.includeLow ? 'on' : ''}" data-action="toggle-low">${state.includeLow ? 'All' : 'Signal'}</button>
         <label class="search-box">
           <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5"></circle><path d="m11 11 3 3"></path></svg>
           <input type="search" value="${escapeHtml(state.search)}" placeholder="Search loaded messages" data-action="search">
@@ -455,7 +460,6 @@ function cardSourcesMarkup(card) {
 function l2Markup() {
   const channel = activeChannel();
   const visible = visibleMessages();
-  const hidden = hiddenLowCount();
 
   return `
     <section class="column l2 ${state.activeLayer === 'L2' ? 'active-layer' : ''}">
@@ -466,13 +470,12 @@ function l2Markup() {
       </div>
       <div class="column-body">
         ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
-        ${hidden ? `<button class="hidden-banner" data-action="toggle-low">${hidden} low/ignore messages hidden - click to show</button>` : ''}
         <div class="message-list">
           ${visible.map(messageMarkup).join('')}
         </div>
         ${state.loading ? '<div class="status">Loading...</div>' : ''}
         ${!state.loading && visible.length === 0 ? '<div class="empty">No messages match this view.</div>' : ''}
-        ${state.nextCursor ? '<button class="load-more" data-action="load-more">Load more</button>' : ''}
+        <div class="scroll-sentinel" aria-hidden="true"></div>
       </div>
     </section>
   `;
@@ -601,6 +604,8 @@ function lightboxMarkup() {
 }
 
 function render() {
+  const previousL2Body = document.querySelector('.l2 .column-body');
+  const previousL2ScrollTop = previousL2Body ? previousL2Body.scrollTop : 0;
   app.innerHTML = `
     ${topbarMarkup()}
     ${tabsMarkup()}
@@ -611,6 +616,13 @@ function render() {
     </main>
     ${lightboxMarkup()}
   `;
+  requestAnimationFrame(() => {
+    const nextL2Body = document.querySelector('.l2 .column-body');
+    if (nextL2Body) {
+      nextL2Body.scrollTop = state.forceL2ScrollTop ?? previousL2ScrollTop;
+      state.forceL2ScrollTop = null;
+    }
+  });
 }
 
 app.addEventListener('input', (event) => {
@@ -624,12 +636,18 @@ app.addEventListener('input', (event) => {
 app.addEventListener('change', async (event) => {
   if (event.target?.dataset?.action !== 'priority') return;
   const value = event.target.value;
-  state.priority = value === 'all' ? '' : value;
-  state.includeLow = value === 'all' || value === 'low' || value === 'ignore';
+  state.priority = value;
   state.messages = [];
   state.nextCursor = null;
   await loadMessages({ reset: true });
 });
+
+app.addEventListener('scroll', async (event) => {
+  const scroller = event.target;
+  if (!(scroller instanceof HTMLElement) || !scroller.matches('.l2 .column-body')) return;
+  const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+  if (remaining < 360) await loadMessages();
+}, true);
 
 app.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-action]');
@@ -656,18 +674,6 @@ app.addEventListener('click', async (event) => {
   if (action === 'layer') {
     state.activeLayer = target.dataset.layer;
     render();
-  }
-
-  if (action === 'toggle-low') {
-    const hadServerPriorityFilter = !!state.priority;
-    state.includeLow = !state.includeLow;
-    state.priority = '';
-    if (hadServerPriorityFilter) await loadMessages({ reset: true });
-    else render();
-  }
-
-  if (action === 'load-more') {
-    await loadMessages();
   }
 
   if (action === 'refresh-all') {

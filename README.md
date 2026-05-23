@@ -253,7 +253,7 @@ chatlog http call --endpoint health --show-status=false
 Cron defaults:
 
 - `RUN_L1=1`
-- `RUN_L0=0`
+- `RUN_L0=1`
 - `DECISION_BATCH_SIZE=20`
 - `CODEX_MODEL=gpt-5.5`
 - `CODEX_REASONING_EFFORT=low`
@@ -264,9 +264,9 @@ Cron defaults:
 | --- | --- | --- | --- | --- |
 | L2 | Message filtering and `high/low` priority labeling | `codex exec` | `gpt-5.5` | `low` |
 | L1 | Hourly topic-state markdown cards | `codex exec` | `gpt-5.5` | `low` |
-| L0 | Optional research report with reference links | `codex --search exec` | `gpt-5.5` | `low` |
+| L0 | Selective research report with reference links | `codex --search exec` | `gpt-5.5` | `low` |
 
-L0 is intentionally off in cron. Run it selectively for high-signal L1 cards; all-hour L0 history is slow and creates low-value reports.
+Hourly cron triggers the L0 stage after L1. The L0 model should return `skip` unless the latest L1 cards are high-signal and research-worthy; avoid all-hour historical L0 backfills.
 
 ## References
 

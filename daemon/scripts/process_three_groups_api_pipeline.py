@@ -85,6 +85,24 @@ def append_jsonl(path, row):
         f.write("\n")
 
 
+def load_env_file(path):
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key or key in os.environ:
+                continue
+            if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            os.environ[key] = value
+
+
 def acquire_lock(path, stale_seconds):
     path.parent.mkdir(parents=True, exist_ok=True)
     while True:
@@ -552,6 +570,20 @@ def post_json(url, api_key, payload, timeout):
         raise RuntimeError(f"POST {url} failed HTTP {exc.code}: {body}") from exc
 
 
+def message_url(args, external_id):
+    return f"{args.cloud_msg_endpoint.rstrip('/')}/{urllib.parse.quote(external_id, safe='')}"
+
+
+def cloud_message_exists(args, external_id):
+    status, _ = get_json(message_url(args, external_id), args.cloud_api_key, args.cloud_timeout, missing_ok=True)
+    return status == 200
+
+
+def post_message_to_cloud(args, msg):
+    status, response = post_json(args.cloud_msg_endpoint, args.cloud_api_key, msg, args.cloud_timeout)
+    return {"mode": "cloud", "status": status, "duplicate": bool(response.get("duplicate"))}
+
+
 def post_binary(url, api_key, data, mime_type, filename, timeout):
     req = urllib.request.Request(url, data=data, method="POST", headers=request_headers(api_key))
     req.add_header("Content-Type", mime_type)
@@ -614,9 +646,9 @@ def submit_message(args, msg):
     if not args.cloud_msg_endpoint:
         append_jsonl(args.out, msg)
         return {"mode": "local", "duplicate": False}
-    status, response = post_json(args.cloud_msg_endpoint, args.cloud_api_key, msg, args.cloud_timeout)
+    result = post_message_to_cloud(args, msg)
     append_jsonl(args.out, msg)
-    return {"mode": "cloud", "status": status, "duplicate": bool(response.get("duplicate"))}
+    return result
 
 
 def refresh_snapshots(args):
@@ -695,6 +727,71 @@ def read_local_messages(path):
             rows.append(row)
     rows.sort(key=lambda row: (row.get("timestamp") or 0, row.get("external_id") or ""))
     return rows
+
+
+def source_ids_for_state_payload(payload):
+    ids = []
+    seen = set()
+
+    def add(value):
+        external_id = clean(value)
+        if external_id and external_id not in seen:
+            seen.add(external_id)
+            ids.append(external_id)
+
+    for external_id in payload.get("source_message_ids") or []:
+        add(external_id)
+    for card in payload.get("cards") or []:
+        for external_id in card.get("message_ids") or []:
+            add(external_id)
+    return ids
+
+
+def ensure_cloud_source_messages(args, payload, local_by_id):
+    if not args.cloud_state_endpoint:
+        return
+    if not args.cloud_msg_endpoint:
+        raise RuntimeError("refusing to post cloud L1 state without CLOUD_MSG_ENDPOINT; source message links would break")
+
+    available = set()
+    posted = 0
+    missing_local = []
+    for external_id in source_ids_for_state_payload(payload):
+        if cloud_message_exists(args, external_id):
+            available.add(external_id)
+            continue
+        msg = local_by_id.get(external_id)
+        if not msg:
+            missing_local.append(external_id)
+            continue
+        post_message_to_cloud(args, msg)
+        available.add(external_id)
+        posted += 1
+
+    payload["source_message_ids"] = [
+        external_id for external_id in payload.get("source_message_ids", [])
+        if external_id in available
+    ]
+    filtered_cards = []
+    for card in payload.get("cards") or []:
+        message_ids = [
+            external_id for external_id in card.get("message_ids", [])
+            if external_id in available
+        ]
+        if not message_ids:
+            continue
+        filtered_cards.append({**card, "message_ids": message_ids})
+    payload["cards"] = filtered_cards
+    payload["markdown"] = "\n".join(f"- **{card['title']}** {card['body']}" for card in filtered_cards)
+
+    if missing_local or posted:
+        append_jsonl(args.states_out, {
+            "at": now_iso(),
+            "mode": "source_message_check",
+            "state_id": payload.get("state_id"),
+            "posted": posted,
+            "missing_local": missing_local,
+        })
 
 
 def prompt_message_view(msg):
@@ -845,6 +942,11 @@ def run_l1(args, all_messages, window_start, window_end, previous_states=None):
     summary = {"posted": 0, "skipped": 0, "failed": 0, "states": []}
     if not args.run_l1:
         return summary
+    local_by_id = {
+        msg["external_id"]: msg
+        for msg in all_messages
+        if msg.get("external_id")
+    }
     for group in GROUPS:
         messages = messages_for_channel_window(all_messages, group["channel_id"], window_start, window_end, args.l1_max_messages)
         if not messages:
@@ -886,6 +988,19 @@ def run_l1(args, all_messages, window_start, window_end, previous_states=None):
                 "previous_state_id": previous_state.get("state_id") or previous_state.get("id") if isinstance(previous_state, dict) else None,
                 "generated_at": now_iso(),
             }
+            ensure_cloud_source_messages(args, payload, local_by_id)
+            if not payload["cards"]:
+                append_jsonl(args.states_out, {
+                    "at": now_iso(),
+                    "mode": "skip",
+                    "channel_id": group["channel_id"],
+                    "level": "L1",
+                    "window_start": window_start,
+                    "window_end": window_end,
+                    "reason": "no cloud-available source messages for L1 cards",
+                })
+                summary["skipped"] += 1
+                continue
             post_channel_state(args, payload)
             summary["posted"] += 1
             summary["states"].append(payload)
@@ -1242,6 +1357,7 @@ def process(args):
 def parse_args():
     repo = Path(__file__).resolve().parents[1]
     out_dir = repo / "exports" / "follow_three_groups_jsonl"
+    load_env_file(out_dir / "cloud.env")
     cloud_msg_endpoint = os.environ.get("CLOUD_MSG_ENDPOINT", "")
     parser = argparse.ArgumentParser(description="Collect, clean, Codex-filter, and assemble API messages.")
     parser.add_argument("--repo", type=Path, default=repo)
