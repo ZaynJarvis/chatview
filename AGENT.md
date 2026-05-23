@@ -63,6 +63,16 @@ Cloud storage is Postgres when `DATABASE_URL` is set. Messages, L1 states, L0 re
 
 PM2 is not currently used for this daemon. Cron is preferred because the worker is an hourly one-shot batch job. Only switch to PM2 if the daemon becomes a long-running listener or needs PM2 dashboard/process management.
 
+`chatlog` must be running locally for collection and image downloads. The daemon only calls it through `chatlog http call`, but that CLI wraps the local HTTP service at `127.0.0.1:5030`.
+
+Historical local image markdown repair is disabled by default. Future image messages are still handled in the normal path: download through `chatlog http call`, upload to `/api/images`, rewrite message content to the cloud URL, then post `/api/messages`. Do not spend hourly cron time repairing old `127.0.0.1` image references unless explicitly asked.
+
+Latest manual catch-up:
+
+- 2026-05-23 14:33-14:44 +08:00 ran a rolling 3 hour catch-up with `--window-seconds 10800 --no-window-align-hour --process-window --skip-repair-local-image-markdown --run-l1 --run-l0`.
+- Result: `candidates=65`, `kept=16`, `deleted=49`, `failed=0`, `l1_posted=3`, `l0_posted=2`, `l0_skipped=1`.
+- Window: `1779507734..1779518534`.
+
 ## GitHub Visibility
 
 The GitHub repo is public. Before it was opened, history was force-pushed to replace the early real API key value in `.env.example` and README examples with `replace_me`. Continue to verify both the current tree and git history for secrets before adding public-facing examples or changing deployment docs.

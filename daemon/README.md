@@ -63,6 +63,8 @@ Stage differences:
 
 Cron defaults to `RUN_L0=1`, so L0 is invoked after hourly L1 output. The L0 prompt is selective and should return `skip` for thin or stale topics.
 
+Historical local chatlog image markdown repair is off by default. Future messages still upload images before message POST; old already-posted local `127.0.0.1` image references are left alone unless a run explicitly sets `REPAIR_LOCAL_IMAGE_MARKDOWN=1` or passes `--repair-local-image-markdown`.
+
 ## Backfill
 
 Message backfill:

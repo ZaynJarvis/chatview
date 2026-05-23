@@ -1570,7 +1570,7 @@ def parse_args():
     parser.add_argument("--skip-l0", dest="run_l0", action="store_false")
     parser.add_argument("--l1-max-messages", type=int, default=int(os.environ.get("L1_MAX_MESSAGES", "120")))
     parser.add_argument("--disable-cloud-previous-state", action="store_true", default=bool_env("DISABLE_CLOUD_PREVIOUS_STATE", False))
-    parser.add_argument("--repair-local-image-markdown", dest="repair_local_image_markdown", action="store_true", default=bool_env("REPAIR_LOCAL_IMAGE_MARKDOWN", True))
+    parser.add_argument("--repair-local-image-markdown", dest="repair_local_image_markdown", action="store_true", default=bool_env("REPAIR_LOCAL_IMAGE_MARKDOWN", False))
     parser.add_argument("--skip-repair-local-image-markdown", dest="repair_local_image_markdown", action="store_false")
     parser.add_argument("--image-repair-limit", type=int, default=int(os.environ.get("IMAGE_REPAIR_LIMIT", "30")))
     parser.add_argument("--skip-collect", action="store_true")
