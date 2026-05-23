@@ -20,8 +20,6 @@ const state = {
   activeLayer: 'L2',
   starred: new Set(JSON.parse(localStorage.getItem('chatview.starred') || '[]')),
   archived: new Set(JSON.parse(localStorage.getItem('chatview.archived') || '[]')),
-  selectedMessage: null,
-  detailLoading: false,
   lightbox: ''
 };
 
@@ -39,37 +37,6 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
-}
-
-function formatTime(seconds) {
-  if (!seconds) return 'unknown';
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  }).format(new Date(seconds * 1000));
-}
-
-function formatWindow(start, end) {
-  if (!start || !end) return 'unknown window';
-  return `${formatTime(start)} - ${formatTime(end)}`;
-}
-
-function timeAgo(seconds) {
-  if (!seconds) return 'unknown';
-  const delta = Math.max(1, Math.floor((Date.now() - seconds * 1000) / 1000));
-  if (delta < 60) return `${delta}s ago`;
-  if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
-  if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
-  return `${Math.floor(delta / 86400)}d ago`;
-}
-
-function initials(name) {
-  const trimmed = String(name || '?').trim();
-  if (!trimmed) return '?';
-  const parts = [...trimmed.replace(/[@#]/g, '').trim()];
-  return parts.slice(0, 2).join('').toUpperCase();
 }
 
 function priorityLabel(priority) {
@@ -241,22 +208,6 @@ async function loadReports() {
   }
 }
 
-async function selectMessage(externalId) {
-  state.detailLoading = true;
-  state.selectedMessage = { external_id: externalId };
-  state.activeLayer = window.innerWidth <= 880 ? 'L1' : state.activeLayer;
-  render();
-  try {
-    const data = await api(`/api/messages/${encodeURIComponent(externalId)}`);
-    state.selectedMessage = data.message;
-  } catch (error) {
-    state.selectedMessage = { external_id: externalId, error: error.message };
-  } finally {
-    state.detailLoading = false;
-    render();
-  }
-}
-
 function activeChannel() {
   return state.channels.find((channel) => channel.channel_id === state.activeChannelId) || state.channels[0];
 }
@@ -359,17 +310,15 @@ function tabsMarkup() {
 function messageMarkup(message) {
   const isStarred = state.starred.has(message.external_id);
   const isArchived = state.archived.has(message.external_id);
-  const isSelected = state.selectedMessage?.external_id === message.external_id;
   const classes = [
     'message',
     `priority-${message.priority}`,
     isStarred ? 'starred' : '',
-    isArchived ? 'archived' : '',
-    isSelected ? 'selected' : ''
+    isArchived ? 'archived' : ''
   ].filter(Boolean).join(' ');
 
   return `
-    <article class="${classes}" data-action="detail" data-external-id="${escapeHtml(message.external_id)}">
+    <article class="${classes}">
       <div class="message-main">
         <div class="message-head">
           <strong>${escapeHtml(message.username)}</strong>
@@ -417,40 +366,10 @@ function l2Markup() {
   `;
 }
 
-function detailMarkup() {
-  const message = state.selectedMessage;
-  if (!message) {
-    return `
-      <div class="empty-panel">
-        <span class="panel-kicker">L2 detail</span>
-        <h2>Select a message</h2>
-        <p>Click any row in the raw feed to load its canonical record from <code>GET /api/messages/{external_id}</code>.</p>
-      </div>
-    `;
-  }
-  if (state.detailLoading) return '<div class="status">Loading message detail...</div>';
-  if (message.error) return `<div class="error">${escapeHtml(message.error)}</div>`;
-  return `
-    <div class="detail-card">
-      <span class="panel-kicker">Message detail</span>
-      <h2>${escapeHtml(message.username)}</h2>
-      <dl>
-        <dt>external_id</dt><dd><code>${escapeHtml(message.external_id)}</code></dd>
-        <dt>channel</dt><dd>${escapeHtml(message.channel)}</dd>
-        <dt>channel_id</dt><dd><code>${escapeHtml(message.channel_id)}</code></dd>
-        <dt>priority</dt><dd><span class="priority-badge ${message.priority}">${escapeHtml(priorityLabel(message.priority))}</span></dd>
-      </dl>
-      <div class="detail-content">${message.content ? escapeHtml(message.content) : '<span class="muted">No text content</span>'}</div>
-      ${message.image_url ? `<img class="detail-image" src="${escapeHtml(message.image_url)}" alt="">` : ''}
-    </div>
-  `;
-}
-
 function l1Markup() {
   const channel = activeChannel();
   const snapshot = state.channelState;
   const cards = snapshot?.cards || [];
-  const sourceCount = snapshot?.source_message_ids?.length || 0;
 
   return `
     <section class="column l1 ${state.activeLayer === 'L1' ? 'active-layer' : ''}">
@@ -460,7 +379,7 @@ function l1Markup() {
         <p>${escapeHtml(channel?.channel || 'selected channel')}</p>
       </div>
       <div class="toolbar">
-        <span class="toolbar-note">${snapshot ? `${cards.length} cards · ${sourceCount} sources` : 'waiting for API state'}</span>
+        <span class="toolbar-note">${snapshot ? `${cards.length} cards` : 'waiting for API state'}</span>
       </div>
       <div class="column-body">
         ${state.stateError ? `<div class="error">${escapeHtml(state.stateError)}</div>` : ''}
@@ -474,12 +393,7 @@ function l1Markup() {
         ` : ''}
         ${snapshot ? `
           <article class="state-summary">
-            <span class="panel-kicker">L1 · ${escapeHtml(snapshot.state_id)}</span>
-            <div class="state-meta">
-              <span>${escapeHtml(formatWindow(snapshot.window_start, snapshot.window_end))}</span>
-              <span>${sourceCount} source messages</span>
-              ${snapshot.previous_state_id ? `<span>prev ${escapeHtml(snapshot.previous_state_id)}</span>` : ''}
-            </div>
+            <span class="panel-kicker">L1 state</span>
             <div class="markdown-body">${markdownMarkup(snapshot.markdown)}</div>
           </article>
           ${cards.length ? `
@@ -491,13 +405,11 @@ function l1Markup() {
                     <span class="priority-badge ${escapeHtml(card.priority || 'normal')}">${escapeHtml(priorityLabel(card.priority || 'normal'))}</span>
                   </div>
                   <p>${escapeHtml(card.body || '')}</p>
-                  ${(card.message_ids || []).length ? `<div class="source-row">${card.message_ids.map((id) => `<code>${escapeHtml(id)}</code>`).join('')}</div>` : ''}
                 </article>
               `).join('')}
             </div>
           ` : '<div class="empty inline-empty">No cards in this state.</div>'}
         ` : ''}
-        ${detailMarkup()}
       </div>
     </section>
   `;
@@ -620,7 +532,6 @@ app.addEventListener('click', async (event) => {
     state.reports = [];
     state.reportsError = '';
     state.selectedReportId = '';
-    state.selectedMessage = null;
     await Promise.all([
       loadMessages({ reset: true }),
       loadChannelState(),
@@ -676,10 +587,6 @@ app.addEventListener('click', async (event) => {
     state.archived.has(id) ? state.archived.delete(id) : state.archived.add(id);
     persistSets();
     render();
-  }
-
-  if (action === 'detail') {
-    await selectMessage(target.dataset.externalId);
   }
 
   if (action === 'lightbox') {
