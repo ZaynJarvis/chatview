@@ -734,7 +734,9 @@ async function serveStatic(req, res, pathname) {
     const data = await fs.readFile(filePath);
     res.writeHead(200, {
       'content-type': mime.get(path.extname(filePath)) || 'application/octet-stream',
-      'cache-control': 'public, max-age=60'
+      'cache-control': 'no-cache, no-store, must-revalidate',
+      pragma: 'no-cache',
+      expires: '0'
     });
     res.end(data);
   } catch {
