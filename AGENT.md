@@ -63,6 +63,10 @@ Cloud storage is Postgres when `DATABASE_URL` is set. Without it, `server.js` fa
 
 PM2 is not currently used for this daemon. Cron is preferred because the worker is an hourly one-shot batch job. Only switch to PM2 if the daemon becomes a long-running listener or needs PM2 dashboard/process management.
 
+## GitHub Visibility
+
+The GitHub repo is private unless explicitly changed. Before making it public, verify both the current tree and git history for secrets. Early private history contained a real API key value in `.env.example`; rotate the key or scrub history before changing repo visibility.
+
 ## Lessons Learned
 
 - Keep collection CLI-only. The user explicitly wants `chatlog` access through `chatlog http call`, not direct local HTTP from daemon code.
