@@ -354,6 +354,19 @@ code { font-family: var(--font-mono); font-size: .92em; }
   background: var(--accent-soft);
   border-color: var(--accent-border);
 }
+.toolbar button.danger {
+  color: #9f1d1d;
+  border-color: rgba(159, 29, 29, .22);
+}
+.toolbar button.danger:hover {
+  color: #7f1d1d;
+  background: rgba(239, 68, 68, .08);
+  border-color: rgba(159, 29, 29, .38);
+}
+.toolbar button:disabled {
+  cursor: default;
+  opacity: .52;
+}
 .toolbar-note {
   margin-left: auto;
   color: var(--text-dim);

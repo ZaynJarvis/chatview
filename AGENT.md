@@ -20,11 +20,11 @@ The API is the contract. Keep local daemon changes compatible with:
 
 | Stage | Purpose | Command | Model | Reasoning |
 | --- | --- | --- | --- | --- |
-| L2 | Per-message keep/delete and `high/low` priority | `codex exec` | `gpt-5.5` | `low` |
-| L1 | Hourly channel topic state as short cards | `codex exec` | `gpt-5.5` | `low` |
-| L0 | Selective research report with reference links | `codex --search exec` | `gpt-5.5` | `low` |
+| L2 | Per-message keep/delete and `high/low` priority, biased toward 🐯/🧀 market signal and relevant replies | `codex exec` | `gpt-5.5` | `low` |
+| L1 | Merged Zhishi ①② hourly topic state as short cards | `codex exec` | `gpt-5.5` | `medium` |
+| L0 | Consolidated investment-advice report with search references and quote API context | `codex --search exec` | `gpt-5.5` | `high` |
 
-Cron currently defaults to `RUN_L0=1`, so L0 is invoked after each hourly L1 run. L0 must stay selective and return `skip` unless the L1 cards are high-signal; do not run broad historical L0 backfills by default.
+Cron currently defaults to `RUN_L0=1` and `L0_MAX_REPORTS=1`, so L0 is invoked after each hourly L1 run but emits one consolidated brief instead of many posts. L0 report IDs are stable by channel/window/ordinal so reruns update a slot instead of creating title-based duplicates. L0 must stay selective and return `skip` unless the L1 cards are high-signal; do not run broad historical L0 backfills by default.
 
 ## Runtime State
 
@@ -84,6 +84,8 @@ The GitHub repo is public. Before it was opened, history was force-pushed to rep
 - Preprocess before cloud calls. Animated stickers, placeholder GIF messages, animated GIF/APNG/WebP, and unsupported image payloads should be dropped before upload.
 - Use `external_id` for idempotency. Message writes are upserts, so replay and backfill are safe.
 - Batch L2 filtering for history. Single-message Codex calls are acceptable for hourly runs, but historical backfill needs `DECISION_BATCH_SIZE`.
+- Zhishi L1 should merge both stock groups into one analysis scope, then post compatible L1 snapshots back under both original channel IDs.
+- Image messages should be uploaded and VLM-captioned before L1/L0 so screenshots can contribute ticker/chart/news evidence.
 - L1 is cheap enough for hourly history; L0 is not. Backfill messages first, then L1-only, then generate L0 only for high-signal cards.
 - Keep local logs bounded. The cron wrapper rotates `cron.log` on every run.
 - Keep image upload before message upload. Local chatlog image markdown must be resolved through `chatlog http call`, uploaded to `/api/images`, and rewritten to cloud URLs before `POST /api/messages`.

@@ -50,17 +50,23 @@ The cron wrapper rotates `exports/follow_three_groups_jsonl/cron.log` before eve
 
 ## Models
 
-All daemon Codex stages currently share:
+Daemon Codex stage defaults:
 
 - Model: `gpt-5.5`
-- Reasoning effort: `low`
+- L2 message filtering reasoning effort: `low`
+- L1 merged topic-state reasoning effort: `medium`
+- L0 investment-report reasoning effort: `high`
+- L0 max reports per window: `1`
 - L1 patch retries: `2`
 
 Stage differences:
 
-- L2 message filtering and priority marking uses `codex exec` with `codex_message_decision*.schema.json`.
-- L1 topic state uses `codex exec` with `codex_l1_state.schema.json`. The model can only return search/replace instructions against the current L1 card document with `match: "single"`; each search must match exactly once, and failed patches are retried with the executor error.
-- L0 research uses `codex --search exec` with `codex_l0_reports.schema.json`.
+- L2 message filtering and priority marking uses `codex exec` with `codex_message_decision*.schema.json`. It now prioritizes 🐯 and 🧀 messages, plus replies that clarify their ticker/sector discussions.
+- Image messages are uploaded and also passed through a Codex VLM caption step using `codex_image_caption.schema.json`; the local L1/L0 prompts can use the extracted image evidence.
+- L1 topic state uses `codex exec` with `codex_l1_state.schema.json`. The two Zhishi US-stock groups are merged into one analysis scope, then posted back to both source channels for ChatView compatibility. The model can only return search/replace instructions against the current L1 card document with `match: "single"`; each search must match exactly once, and failed patches are retried with the executor error.
+- L0 research uses `codex --search exec` with `codex_l0_reports.schema.json`. These reports now act as the investment-advice layer: they review the L1 sectors/stocks with current facts, Stooq quote data by default, value-investing framing, short-term strategy, risks, invalidation, and source message references.
+- L0 defaults to one consolidated hourly investment brief (`L0_MAX_REPORTS=1`), with individual stocks/sectors ranked inside the brief instead of split into many posts.
+- L0 report IDs are stable by channel/window/ordinal, so rerunning a window updates the same report slot instead of creating another post when the title changes.
 
 Cron defaults to `RUN_L0=1`, so L0 is invoked after hourly L1 output. The L0 prompt is selective and should return `skip` for thin or stale topics.
 

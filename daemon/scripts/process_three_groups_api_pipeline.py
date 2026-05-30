@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -22,6 +24,13 @@ GROUPS = [
     {"channel_id": "45271353210@chatroom", "channel": "Slock 中文社区（暂定）"},
 ]
 
+ZHISHI_GROUP_IDS = {"25979223983@chatroom", "26929515373@chatroom"}
+ZHISHI_MERGED_GROUP = {
+    "channel_id": "zhishi-us-stocks-merged",
+    "channel": "芝士美股分享①②合并",
+    "source_channel_ids": sorted(ZHISHI_GROUP_IDS),
+}
+
 KEY_SENDER_HINTS = [
     "🐯",
     "🧀",
@@ -32,6 +41,21 @@ KEY_SENDER_HINTS = [
 
 VALID_PRIORITIES = {"high", "low"}
 HTTP_USER_AGENT = "chatview-daemon/1.0"
+KNOWN_TICKER_ALIASES = {
+    "老虎": "TIGR",
+    "富途": "FUTU",
+    "长桥": "LGTY",
+    "高通": "QCOM",
+    "诺基亚": "NOK",
+    "微软": "MSFT",
+    "英伟达": "NVDA",
+    "苹果": "AAPL",
+    "谷歌": "GOOGL",
+    "特斯拉": "TSLA",
+    "京东": "JD",
+    "蔚来": "NIO",
+    "科创": "KSTR",
+}
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 L1_EMPTY_DOCUMENT = "<!-- L1_STATE_EMPTY -->"
 L1_CARD_START = "<!-- L1_CARD_START -->"
@@ -169,7 +193,17 @@ def group_lookup():
     for group in GROUPS:
         out[group["channel_id"]] = group
         out[group["channel"]] = group
+    out[ZHISHI_MERGED_GROUP["channel_id"]] = ZHISHI_MERGED_GROUP
+    out[ZHISHI_MERGED_GROUP["channel"]] = ZHISHI_MERGED_GROUP
     return out
+
+
+def intelligence_groups():
+    return [ZHISHI_MERGED_GROUP]
+
+
+def group_source_ids(group):
+    return set(group.get("source_channel_ids") or [group["channel_id"]])
 
 
 def resolve_group(raw):
@@ -335,10 +369,12 @@ Return JSON only matching the provided schema:
 {{"action":"keep"|"delete","priority":"high"|"low"|null,"reason":"short reason"}}
 
 Decision policy:
-- Keep only messages that are useful for downstream market/project intelligence, especially concrete analysis, decisions, predictions, news, tickers, positions, risks, notable links/images, or Slock/project-relevant updates.
+- Keep only messages that are useful for downstream market intelligence, especially concrete analysis, decisions, predictions, news, tickers, sectors, positions, risks, notable links/images, or actionable trading/investing context.
 - Delete meaningless chatter: greetings, jokes, acknowledgements, pure reactions, very short off-topic replies, social coordination, duplicated noise, or messages with no standalone information.
-- Important speakers are strong keep candidates: 🐯, 🧀, 天翼, 一只腊鸡的阿西 / 一只辣鸡的阿西.
-- For important speakers, keep unless the message is clearly empty/noise. Mark high when it contains substantive analysis, explicit recommendation, risk, market view, Slock/project information, or actionable content. Mark low for lightweight but still potentially useful comments.
+- Important speakers are strong keep candidates: 🐯 and 🧀 first; 天翼 and 一只腊鸡的阿西 / 一只辣鸡的阿西 are secondary.
+- For 🐯 and 🧀, keep unless the message is clearly empty/noise. Mark high when it contains substantive analysis, explicit recommendation, risk, market view, ticker/sector view, or actionable content. Mark low for lightweight but still potentially useful comments.
+- Keep non-key messages when they reply to, challenge, clarify, add data to, or provide context for a 🐯/🧀 topic.
+- If has_image is true, treat the image as potentially market-relevant unless clearly a sticker; downstream VLM/image handling must get a chance to inspect it.
 - For other speakers, default to delete unless the message has clear standalone signal. If kept, choose high only for strong actionable/substantive information; otherwise low.
 - If action is delete, priority must be null. If action is keep, priority must be high or low.
 
@@ -370,10 +406,12 @@ Return JSON only matching the provided schema:
 
 Decision policy:
 - Make one independent decision for every input message.external_id.
-- Keep only messages useful for downstream market/project intelligence, especially concrete analysis, decisions, predictions, news, tickers, positions, risks, notable links/images, or Slock/project-relevant updates.
+- Keep only messages useful for downstream market intelligence, especially concrete analysis, decisions, predictions, news, tickers, sectors, positions, risks, notable links/images, or actionable trading/investing context.
 - Delete meaningless chatter: greetings, jokes, acknowledgements, pure reactions, very short off-topic replies, social coordination, duplicated noise, or messages with no standalone information.
-- Important speakers are strong keep candidates: 🐯, 🧀, 天翼, 一只腊鸡的阿西 / 一只辣鸡的阿西.
-- For important speakers, keep unless the message is clearly empty/noise. Mark high when it contains substantive analysis, explicit recommendation, risk, market view, Slock/project information, or actionable content. Mark low for lightweight but still potentially useful comments.
+- Important speakers are strong keep candidates: 🐯 and 🧀 first; 天翼 and 一只腊鸡的阿西 / 一只辣鸡的阿西 are secondary.
+- For 🐯 and 🧀, keep unless the message is clearly empty/noise. Mark high when it contains substantive analysis, explicit recommendation, risk, market view, ticker/sector view, or actionable content. Mark low for lightweight but still potentially useful comments.
+- Keep non-key messages when they reply to, challenge, clarify, add data to, or provide context for a 🐯/🧀 topic.
+- If has_image is true, treat the image as potentially market-relevant unless clearly a sticker; downstream VLM/image handling must get a chance to inspect it.
 - For other speakers, default to delete unless the message has clear standalone signal. If kept, choose high only for strong actionable/substantive information; otherwise low.
 - If action is delete, priority must be null. If action is keep, priority must be high or low.
 - Output exactly one decision per input external_id.
@@ -415,16 +453,16 @@ def heuristic_decision(msg, raw):
     if is_key_sender(username):
         if not content and not has_image:
             return {"action": "delete", "priority": None, "reason": "key sender but empty message"}
-        high_terms = ["买", "卖", "风险", "仓", "股票", "美股", "slock", "Slock", "突破", "财报", "期权", "涨", "跌"]
+        high_terms = ["买", "卖", "风险", "仓", "股票", "美股", "突破", "财报", "期权", "涨", "跌", "板块", "估值", "支撑"]
         priority = "high" if any(term in content for term in high_terms) or has_image else "low"
         return {"action": "keep", "priority": priority, "reason": "key sender fallback decision"}
-    signal_terms = ["股票", "美股", "slock", "Slock", "$", "ETF", "期权", "财报", "风险", "买", "卖"]
+    signal_terms = ["股票", "美股", "$", "ETF", "期权", "财报", "风险", "买", "卖", "板块", "估值", "支撑"]
     if len(content) >= 8 and any(term in content for term in signal_terms):
         return {"action": "keep", "priority": "low", "reason": "non-key sender with possible signal"}
     return {"action": "delete", "priority": None, "reason": "fallback deleted likely low-signal chatter"}
 
 
-def codex_exec_json(args, prompt, schema_path, out_path, timeout, use_search=False):
+def codex_exec_json(args, prompt, schema_path, out_path, timeout, use_search=False, image_paths=None, reasoning_effort=None):
     args.codex_out_dir.mkdir(parents=True, exist_ok=True)
     try:
         out_path.unlink()
@@ -449,11 +487,14 @@ def codex_exec_json(args, prompt, schema_path, out_path, timeout, use_search=Fal
         str(out_path),
         "-C",
         str(args.repo),
-        "-",
     ])
-    if args.codex_reasoning_effort:
+    for image_path in image_paths or []:
+        cmd.extend(["--image", str(image_path)])
+    cmd.append("-")
+    effective_reasoning_effort = args.codex_reasoning_effort if reasoning_effort is None else reasoning_effort
+    if effective_reasoning_effort:
         insert_at = 3 if use_search else 2
-        cmd[insert_at:insert_at] = ["-c", f"model_reasoning_effort={json.dumps(args.codex_reasoning_effort)}"]
+        cmd[insert_at:insert_at] = ["-c", f"model_reasoning_effort={json.dumps(effective_reasoning_effort)}"]
 
     try:
         proc = subprocess.run(
@@ -740,12 +781,70 @@ def chatlog_download_best_image(args, image_key):
 def upload_image_key(args, image_key):
     if not image_key or not args.cloud_img_endpoint:
         return None
-    data, selected_key = chatlog_download_best_image(args, image_key)
+    try:
+        data, selected_key = chatlog_download_best_image(args, image_key)
+    except RuntimeError as exc:
+        detail = str(exc)
+        if "no usable image payload" in detail or "unsupported payload" in detail:
+            raise PreprocessDelete(detail) from exc
+        raise
     return upload_image_data(args, data, selected_key)
 
 
 def upload_image(args, raw):
     return upload_image_key(args, select_image_key(raw))
+
+
+def describe_image_with_vlm(args, image_key, msg):
+    if not image_key:
+        return None
+    data, selected_key = chatlog_download_best_image(args, image_key)
+    if is_animated_image_data(data):
+        return None
+    mime_type = mime_type_for(data)
+    if not mime_type.startswith("image/"):
+        return None
+    suffix = "." + extension_for_mime(mime_type)
+    with tempfile.NamedTemporaryFile(prefix="chatlog-vlm-", suffix=suffix, delete=False) as tmp:
+        tmp.write(data)
+        image_path = Path(tmp.name)
+    try:
+        prompt = f"""
+You are a VLM analyst for a Chinese US-stock WeChat feed.
+
+Return JSON only matching the provided schema.
+
+Extract only market-relevant visual information:
+- OCR visible ticker/company/price/chart/table/news text when readable.
+- Describe chart direction, support/resistance, earnings/news headlines, watchlist rows, or position/order information.
+- If the image is not market-relevant, say so concisely.
+- Do not invent unreadable text.
+
+Selected chatlog image key: {selected_key}
+Message context:
+{json.dumps(prompt_message_view(msg), ensure_ascii=False, indent=2)}
+""".strip()
+        out_path = args.codex_out_dir / f"{safe_filename(msg['external_id'])}.image.json"
+        result = codex_exec_json(
+            args,
+            prompt,
+            args.image_caption_schema,
+            out_path,
+            args.image_codex_timeout,
+            image_paths=[image_path],
+            reasoning_effort=args.image_reasoning_effort,
+        )
+        return {
+            "summary": bounded_text(result.get("summary"), 500),
+            "visible_text": bounded_text(result.get("visible_text"), 1000),
+            "market_relevance": result.get("market_relevance") if result.get("market_relevance") in {"high", "low", "none"} else "low",
+            "tickers": [bounded_text(item, 12).upper() for item in result.get("tickers") or [] if clean(item)][:12],
+        }
+    finally:
+        try:
+            image_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def prepare_message_images(args, raw, msg):
@@ -776,6 +875,20 @@ def prepare_message_images(args, raw, msg):
 
     if uploaded_urls:
         msg["image_url"] = uploaded_urls[0]
+    analysis_key = raw_image_key or (sources[0]["image_key"] if sources else None)
+    if analysis_key:
+        try:
+            image_analysis = describe_image_with_vlm(args, analysis_key, msg)
+            if image_analysis:
+                msg["image_analysis"] = image_analysis
+        except Exception as exc:
+            append_jsonl(args.errors, {
+                "at": now_iso(),
+                "external_id": msg.get("external_id"),
+                "stage": "image_vlm",
+                "error": str(exc),
+                "image_key": analysis_key,
+            })
     msg["content"] = content
     return uploaded_urls
 
@@ -938,6 +1051,7 @@ def prompt_message_view(msg):
         "username": clean_text(msg.get("username")),
         "content": bounded_text(msg.get("content"), 1200),
         "image_url": msg.get("image_url"),
+        "image_analysis": msg.get("image_analysis"),
         "timestamp": msg.get("timestamp"),
         "datetime": iso_for_timestamp(msg.get("timestamp")),
         "priority": msg.get("priority"),
@@ -963,6 +1077,38 @@ def messages_for_channel_window(messages, channel_id, window_start, window_end, 
         )[:limit]
         selected = sorted(ranked, key=lambda msg: (normalize_timestamp(msg.get("timestamp")), msg.get("external_id") or ""))
     return selected
+
+
+def messages_for_group_window(messages, group, window_start, window_end, limit):
+    source_ids = group_source_ids(group)
+    selected = [
+        msg for msg in messages
+        if msg.get("channel_id") in source_ids
+        and window_start <= normalize_timestamp(msg.get("timestamp")) < window_end
+    ]
+    if limit and len(selected) > limit:
+        ranked = sorted(
+            selected,
+            key=lambda msg: (
+                1 if is_key_sender(clean_text(msg.get("username"))) else 0,
+                1 if msg.get("priority") == "high" else 0,
+                1 if msg.get("image_analysis") else 0,
+                normalize_timestamp(msg.get("timestamp")),
+            ),
+            reverse=True,
+        )[:limit]
+        selected = sorted(ranked, key=lambda msg: (normalize_timestamp(msg.get("timestamp")), msg.get("external_id") or ""))
+    return selected
+
+
+def output_channels_for_group(group):
+    if group.get("channel_id") != ZHISHI_MERGED_GROUP["channel_id"]:
+        return [{"channel_id": group["channel_id"], "channel": group["channel"]}]
+    lookup = group_lookup()
+    return [
+        {"channel_id": channel_id, "channel": lookup[channel_id]["channel"]}
+        for channel_id in ["26929515373@chatroom", "25979223983@chatroom"]
+    ]
 
 
 def extract_state_response(data):
@@ -1104,13 +1250,15 @@ def build_l1_prompt(group, messages, previous_state, current_document, window_st
         "messages": [prompt_message_view(msg) for msg in messages],
     }
     return f"""
-You maintain L1 channel state for a WeChat intelligence feed.
+You maintain the L1 state document for the Zhishi US-stock intelligence feed.
 
 Return JSON only matching the provided schema.
 
 Goal:
-- Update current_l1_document with the last-hour filtered messages.
-- Keep only durable, important topic state and key indexes.
+- Update current_l1_document with the latest filtered messages from both Zhishi groups.
+- Treat this L1 document as the durable topic layer extracted from L2 messages: sectors, themes, tickers, catalysts, stance, risk, and what changed.
+- Focus on 🐯 and 🧀 as high-value investors. Their insight, advice, risk framing, and the topics they discuss are the primary signal.
+- Preserve related messages from other people only when they clarify, challenge, add data to, or name the ticker/sector behind a 🐯/🧀 discussion.
 - Preserve existing useful cards unless a new message changes, supersedes, or makes them stale.
 - The executor will convert the patched document back into frontend cards.
 
@@ -1135,7 +1283,10 @@ Rules:
   body: <= 50 Chinese/English characters
   {L1_CARD_END}
 - Drop stale, duplicated, vague, or low-signal chatter by explicit replacement only.
-- Do not invent facts or external research here.
+- Merge 芝士美股分享①群 and 芝士美股分享②群 into one combined view. Do not split output by group.
+- Prefer cards about investable sectors/tickers over generic market mood.
+- If image_analysis exists, use it as VLM evidence and cite the image message id when relevant.
+- Do not invent external facts or research here; only extract and compress group evidence.
 
 Input:
 {json.dumps(payload, ensure_ascii=False, indent=2)}
@@ -1189,7 +1340,14 @@ def generate_l1_state(args, group, messages, previous_state, current_document, w
         suffix = f"_attempt{attempt + 1}" if attempt else ""
         out_path = args.codex_out_dir / f"l1_{safe_filename(group['channel_id'])}_{window_start}_{window_end}{suffix}.json"
         try:
-            result = codex_exec_json(args, prompt, args.l1_schema, out_path, args.l1_codex_timeout)
+            result = codex_exec_json(
+                args,
+                prompt,
+                args.l1_schema,
+                out_path,
+                args.l1_codex_timeout,
+                reasoning_effort=args.l1_reasoning_effort,
+            )
             normalized = normalize_l1_result(result)
             if normalized["action"] == "skip":
                 return {"action": "skip", "markdown": "", "cards": [], "reason": normalized["reason"]}
@@ -1237,18 +1395,20 @@ def run_l1(args, all_messages, window_start, window_end, previous_states=None):
         for msg in all_messages
         if msg.get("external_id")
     }
-    for group in GROUPS:
-        messages = messages_for_channel_window(all_messages, group["channel_id"], window_start, window_end, args.l1_max_messages)
+    for group in intelligence_groups():
+        output_channels = output_channels_for_group(group)
+        previous_channel_id = output_channels[0]["channel_id"]
+        messages = messages_for_group_window(all_messages, group, window_start, window_end, args.l1_max_messages)
         if not messages:
             summary["skipped"] += 1
             continue
         try:
             if previous_states is not None:
-                previous_state = previous_states.get(group["channel_id"])
+                previous_state = previous_states.get(group["channel_id"]) or previous_states.get(previous_channel_id)
             elif args.disable_cloud_previous_state:
                 previous_state = None
             else:
-                previous_state = get_channel_state(args, group["channel_id"], "L1")
+                previous_state = get_channel_state(args, previous_channel_id, "L1")
             current_document = l1_document_from_state(previous_state)
             normalized = generate_l1_state(args, group, messages, previous_state, current_document, window_start, window_end)
             if normalized["action"] == "skip":
@@ -1263,10 +1423,12 @@ def run_l1(args, all_messages, window_start, window_end, previous_states=None):
                 })
                 summary["skipped"] += 1
                 continue
-            payload = {
+            canonical_payload = {
                 "state_id": f"l1:{group['channel_id']}:{window_start}:{window_end}",
                 "channel_id": group["channel_id"],
                 "channel": group["channel"],
+                "output_channel_ids": [item["channel_id"] for item in output_channels],
+                "source_channel_ids": sorted(group_source_ids(group)),
                 "level": "L1",
                 "markdown": normalized["markdown"],
                 "cards": normalized["cards"],
@@ -1276,8 +1438,20 @@ def run_l1(args, all_messages, window_start, window_end, previous_states=None):
                 "previous_state_id": previous_state.get("state_id") or previous_state.get("id") if isinstance(previous_state, dict) else None,
                 "generated_at": now_iso(),
             }
-            ensure_cloud_source_messages(args, payload, local_by_id)
-            if not payload["cards"]:
+            posted_any = False
+            for output_channel in output_channels:
+                payload = {
+                    **canonical_payload,
+                    "state_id": f"l1:{output_channel['channel_id']}:{window_start}:{window_end}",
+                    "channel_id": output_channel["channel_id"],
+                    "channel": output_channel["channel"],
+                }
+                ensure_cloud_source_messages(args, payload, local_by_id)
+                if not payload["cards"]:
+                    continue
+                post_channel_state(args, payload)
+                posted_any = True
+            if not posted_any:
                 append_jsonl(args.states_out, {
                     "at": now_iso(),
                     "mode": "skip",
@@ -1289,9 +1463,8 @@ def run_l1(args, all_messages, window_start, window_end, previous_states=None):
                 })
                 summary["skipped"] += 1
                 continue
-            post_channel_state(args, payload)
             summary["posted"] += 1
-            summary["states"].append(payload)
+            summary["states"].append(canonical_payload)
         except Exception as exc:
             summary["failed"] += 1
             append_jsonl(args.errors, {
@@ -1305,7 +1478,95 @@ def run_l1(args, all_messages, window_start, window_end, previous_states=None):
     return summary
 
 
-def build_l0_prompt(group, state_payload, window_start, window_end):
+def extract_candidate_tickers(text):
+    candidates = set()
+    for alias, symbol in KNOWN_TICKER_ALIASES.items():
+        if alias in text:
+            candidates.add(symbol)
+    for token in re.findall(r"(?<![A-Z0-9])\$?([A-Z]{1,6})(?![A-Z0-9])", text):
+        if token in {"AI", "API", "ATM", "CEO", "CFO", "ETF", "IPO", "USD", "USA", "US", "Q1", "Q2", "Q3", "Q4"}:
+            continue
+        candidates.add(token)
+    return sorted(candidates)
+
+
+def quote_number(value):
+    if value is None:
+        return None
+    try:
+        return round(float(value), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_market_quotes(args, symbols):
+    symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol]
+    if not symbols or not args.quote_endpoint:
+        return []
+    selected = symbols[: args.max_quote_symbols]
+    try:
+        if "stooq.com" in args.quote_endpoint:
+            stooq_symbols = "+".join(f"{symbol.lower()}.us" for symbol in selected)
+            query = urllib.parse.urlencode({"f": "sd2t2ohlcv", "h": "", "e": "csv"})
+            url = f"{args.quote_endpoint.rstrip('/?')}/?s={urllib.parse.quote(stooq_symbols, safe='+.')}&{query}"
+            req = urllib.request.Request(url, headers={"Accept": "text/csv", "User-Agent": HTTP_USER_AGENT})
+            with urllib.request.urlopen(req, timeout=args.quote_timeout) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+            rows = csv.DictReader(io.StringIO(text))
+            quotes = []
+            for row in rows:
+                symbol = clean_text(row.get("Symbol")).upper().removesuffix(".US")
+                if not symbol or clean_text(row.get("Date")) == "N/D":
+                    continue
+                quotes.append({
+                    "symbol": symbol,
+                    "source": "stooq",
+                    "date": clean_text(row.get("Date")),
+                    "time": clean_text(row.get("Time")),
+                    "open": quote_number(row.get("Open")),
+                    "high": quote_number(row.get("High")),
+                    "low": quote_number(row.get("Low")),
+                    "price": quote_number(row.get("Close")),
+                    "volume": quote_number(row.get("Volume")),
+                })
+            return quotes
+
+        status, data = get_json(args.quote_endpoint, "", args.quote_timeout, params={"symbols": ",".join(selected)})
+        if status >= 400:
+            return []
+        results = data.get("quoteResponse", {}).get("result", []) if isinstance(data, dict) else []
+        quotes = []
+        for item in results:
+            symbol = clean_text(item.get("symbol"))
+            if not symbol:
+                continue
+            quotes.append({
+                "symbol": symbol,
+                "source": "json_quote_api",
+                "short_name": clean_text(item.get("shortName") or item.get("longName")),
+                "currency": clean_text(item.get("currency")),
+                "price": quote_number(item.get("regularMarketPrice")),
+                "change_percent": quote_number(item.get("regularMarketChangePercent")),
+                "market_cap": quote_number(item.get("marketCap")),
+                "fifty_two_week_low": quote_number(item.get("fiftyTwoWeekLow")),
+                "fifty_two_week_high": quote_number(item.get("fiftyTwoWeekHigh")),
+                "forward_pe": quote_number(item.get("forwardPE")),
+                "trailing_pe": quote_number(item.get("trailingPE")),
+                "regular_market_time": iso_for_timestamp(item.get("regularMarketTime")),
+            })
+        return quotes
+    except Exception as exc:
+        append_jsonl(args.errors, {
+            "at": now_iso(),
+            "stage": "market_quotes",
+            "symbols": selected,
+            "error": str(exc),
+        })
+        return []
+
+
+def build_l0_prompt(group, state_payload, window_start, window_end, market_quotes, max_reports):
+    max_reports = max(1, int(max_reports or 1))
     payload = {
         "channel": group,
         "window": {
@@ -1314,33 +1575,49 @@ def build_l0_prompt(group, state_payload, window_start, window_end):
             "start_iso": iso_for_timestamp(window_start),
             "end_iso": iso_for_timestamp(window_end),
         },
+        "generated_at": now_iso(),
         "l1_state": state_payload,
+        "market_quotes": market_quotes,
+        "max_reports": max_reports,
     }
     return f"""
-You generate L0 research reports from L1 topic state.
+You are the Codex investment review agent for the Zhishi US-stock feed.
+
+You generate L0 reports that act as the user's L1 investment advice layer, based on L1 topic state extracted from L2 messages.
 
 Return JSON only matching the provided schema.
 
 Goal:
-- Decide whether any L1 topic deserves a short research report.
-- If yes, produce 1-3 single-page markdown reports.
-- Each report should be readable in about 5 minutes.
-- Keep non-obvious insight, implications, and reference links.
+- Always review the sectors and individual stocks extracted by L1 topic state.
+- Use current facts, search, and the provided market quote API payload when useful.
+- Produce compact but decisive investment analysis: value-investing view, short-term trading strategy, catalysts, risk, invalidation, and action.
+- Output actionable recommendations for each stock/sector worth covering.
+- Return at most {max_reports} report(s). Prefer one consolidated hourly investment brief with subsections for stocks/sectors over many separate posts.
+- Preserve references back to L2 source message ids through reports[].source_message_ids.
 
 Rules:
-- action=skip when topics are too thin, stale, or not research-worthy.
-- Use search for current facts and references when useful.
+- action=skip only when L1 has no investable ticker/sector/theme. Do not skip because the analysis is hard.
+- If max_reports is 1, reports[] must contain exactly one consolidated report when action=post. Put all actionable stock/sector recommendations inside that single report.
+- Use search for current facts and references; prefer primary filings, IR/news releases, reputable market data, and current price context.
 - Include reference URLs in reports[].references.
 - Tie each report back to source_state_ids and source_message_ids.
-- Avoid generic background. Focus on what changed and why it matters.
-- Do not overproduce reports.
+- Treat 🐯 and 🧀 as high-value investors. Their opinions are important evidence, but you still need to review price, valuation, catalysts, and risk.
+- Do not include generic "not investment advice" disclaimers or responsibility-avoidance language. Be direct about buy/hold/watch/avoid, position sizing, entry/exit levels when the evidence supports it.
+- Do not invent public facts, official roles, filings, quotes, earnings, or macro events. If search does not verify a factual claim with a credible source, either omit it or label it as group interpretation.
+- When the group mentions a public figure or event in shorthand, do not extrapolate it into a current official role or policy change unless a cited source verifies that exact fact.
+- Use exact dates for market/fundamental facts when they matter. The provided market_quotes payload is the trusted quote context for symbols it contains.
+- Separate value-investing thesis from short-term strategy.
+- Mark uncertainty as specific decision conditions, not generic caveats.
+- Avoid generic background. Focus on what changed, why it matters, and what to do.
+- Do not overproduce reports. When several tickers are related, group them by theme and rank only the highest-value actions.
 
 Input:
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 """.strip()
 
 
-def normalize_l0_result(result):
+def normalize_l0_result(result, max_reports):
+    max_reports = max(1, int(max_reports or 1))
     action = result.get("action")
     reason = bounded_text(result.get("reason"), 240)
     if action not in {"post", "skip"}:
@@ -1378,7 +1655,7 @@ def normalize_l0_result(result):
                 "source_state_ids": source_state_ids,
                 "source_message_ids": source_message_ids,
             })
-        if len(reports) >= 3:
+        if len(reports) >= max_reports:
             break
     if not reports:
         return {"action": "skip", "reports": [], "reason": reason or "no valid L0 reports"}
@@ -1403,10 +1680,20 @@ def run_l0(args, l1_states, window_start, window_end):
         if not group:
             continue
         try:
-            prompt = build_l0_prompt(group, state_payload, window_start, window_end)
-            out_path = args.codex_out_dir / f"l0_{safe_filename(group['channel_id'])}_{window_start}_{window_end}.json"
-            result = codex_exec_json(args, prompt, args.l0_schema, out_path, args.l0_codex_timeout, use_search=True)
-            normalized = normalize_l0_result(result)
+            ticker_text = json.dumps(state_payload, ensure_ascii=False)
+            market_quotes = fetch_market_quotes(args, extract_candidate_tickers(ticker_text))
+            prompt = build_l0_prompt(group, state_payload, window_start, window_end, market_quotes, args.l0_max_reports)
+            out_path = args.codex_out_dir / f"l0_investment_{safe_filename(group['channel_id'])}_{window_start}_{window_end}.json"
+            result = codex_exec_json(
+                args,
+                prompt,
+                args.l0_schema,
+                out_path,
+                args.l0_codex_timeout,
+                use_search=True,
+                reasoning_effort=args.l0_reasoning_effort,
+            )
+            normalized = normalize_l0_result(result, args.l0_max_reports)
             if normalized["action"] == "skip":
                 append_jsonl(args.reports_out, {
                     "at": now_iso(),
@@ -1420,28 +1707,29 @@ def run_l0(args, l1_states, window_start, window_end):
                 summary["skipped"] += 1
                 continue
             for index, report in enumerate(normalized["reports"], start=1):
-                digest = hashlib.sha1(
-                    f"{group['channel_id']}|{window_start}|{window_end}|{report['title']}".encode("utf-8")
-                ).hexdigest()
-                payload = {
-                    "report_id": f"l0:{digest}",
-                    "level": "L0",
-                    "channel_id": group["channel_id"],
-                    "channel": group["channel"],
-                    "title": report["title"],
-                    "summary": report["summary"],
-                    "markdown": report["markdown"],
-                    "topics": report["topics"],
-                    "references": report["references"],
-                    "window_start": window_start,
-                    "window_end": window_end,
-                    "source_state_ids": report["source_state_ids"] or [state_payload["state_id"]],
-                    "source_message_ids": report["source_message_ids"],
-                    "generated_at": now_iso(),
-                    "ordinal": index,
-                }
-                post_report(args, payload)
-                summary["posted"] += 1
+                for output_channel in output_channels_for_group(group):
+                    digest = hashlib.sha1(
+                        f"{output_channel['channel_id']}|{window_start}|{window_end}|{index}".encode("utf-8")
+                    ).hexdigest()
+                    payload = {
+                        "report_id": f"l0:{digest}",
+                        "level": "L0",
+                        "channel_id": output_channel["channel_id"],
+                        "channel": output_channel["channel"],
+                        "title": report["title"],
+                        "summary": report["summary"],
+                        "markdown": report["markdown"],
+                        "topics": report["topics"],
+                        "references": report["references"],
+                        "window_start": window_start,
+                        "window_end": window_end,
+                        "source_state_ids": [f"l1:{output_channel['channel_id']}:{window_start}:{window_end}"],
+                        "source_message_ids": report["source_message_ids"],
+                        "generated_at": now_iso(),
+                        "ordinal": index,
+                    }
+                    post_report(args, payload)
+                    summary["posted"] += 1
         except Exception as exc:
             summary["failed"] += 1
             append_jsonl(args.errors, {
@@ -1597,7 +1885,7 @@ def process(args):
                         append_jsonl(args.errors, {
                             "at": now_iso(),
                             "external_id": msg["external_id"],
-                            "stage": "image_upload",
+                            "stage": "image_processing",
                             "error": str(exc),
                             "image_keys": image_keys_for_message(raw),
                         })
@@ -1726,12 +2014,17 @@ def parse_args():
     parser.add_argument("--dry-run-out", type=Path, default=out_dir / "dry_run_api_messages.jsonl")
     parser.add_argument("--decision-schema", type=Path, default=repo / "scripts" / "codex_message_decision.schema.json")
     parser.add_argument("--batch-decision-schema", type=Path, default=repo / "scripts" / "codex_message_decisions_batch.schema.json")
+    parser.add_argument("--image-caption-schema", type=Path, default=repo / "scripts" / "codex_image_caption.schema.json")
     parser.add_argument("--l1-schema", type=Path, default=repo / "scripts" / "codex_l1_state.schema.json")
     parser.add_argument("--l0-schema", type=Path, default=repo / "scripts" / "codex_l0_reports.schema.json")
     parser.add_argument("--codex-bin", default=os.environ.get("CODEX_BIN", "/opt/homebrew/bin/codex"))
     parser.add_argument("--codex-model", default=os.environ.get("CODEX_MODEL", "gpt-5.5"))
     parser.add_argument("--codex-reasoning-effort", default=os.environ.get("CODEX_REASONING_EFFORT", "low"))
+    parser.add_argument("--image-reasoning-effort", default=os.environ.get("IMAGE_REASONING_EFFORT", "low"))
+    parser.add_argument("--l1-reasoning-effort", default=os.environ.get("L1_REASONING_EFFORT", "medium"))
+    parser.add_argument("--l0-reasoning-effort", default=os.environ.get("L0_REASONING_EFFORT", "high"))
     parser.add_argument("--codex-timeout", type=int, default=int(os.environ.get("CODEX_TIMEOUT", "180")))
+    parser.add_argument("--image-codex-timeout", type=int, default=int(os.environ.get("IMAGE_CODEX_TIMEOUT", "180")))
     parser.add_argument("--l1-codex-timeout", type=int, default=int(os.environ.get("L1_CODEX_TIMEOUT", "300")))
     parser.add_argument("--l0-codex-timeout", type=int, default=int(os.environ.get("L0_CODEX_TIMEOUT", "900")))
     parser.add_argument("--codex-out-dir", type=Path, default=out_dir / "codex_outputs")
@@ -1752,6 +2045,13 @@ def parse_args():
     )
     parser.add_argument("--cloud-api-key", default=os.environ.get("CLOUD_API_KEY", ""))
     parser.add_argument("--cloud-timeout", type=int, default=int(os.environ.get("CLOUD_TIMEOUT", "30")))
+    parser.add_argument(
+        "--quote-endpoint",
+        default=os.environ.get("QUOTE_ENDPOINT", "https://stooq.com/q/l/"),
+    )
+    parser.add_argument("--quote-timeout", type=int, default=int(os.environ.get("QUOTE_TIMEOUT", "15")))
+    parser.add_argument("--max-quote-symbols", type=int, default=int(os.environ.get("MAX_QUOTE_SYMBOLS", "16")))
+    parser.add_argument("--l0-max-reports", type=int, default=int(os.environ.get("L0_MAX_REPORTS", "1")))
     parser.add_argument("--collect-timeout", type=int, default=120)
     parser.add_argument("--max-messages", type=int, default=int(os.environ.get("MAX_MESSAGES_PER_RUN", "0")))
     parser.add_argument("--window-seconds", type=int, default=int(os.environ.get("WINDOW_SECONDS", "3600")))

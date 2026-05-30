@@ -11,6 +11,8 @@ const publicDir = path.join(root, 'public');
 const uploadsDir = process.env.UPLOAD_DIR || path.join('/tmp', 'chatview-uploads');
 const port = Number(process.env.PORT || 3000);
 const maxUploadBytes = Number(process.env.MAX_IMAGE_UPLOAD_BYTES || 10 * 1024 * 1024);
+const defaultL1CardLimit = Number(process.env.L1_COMPACT_CARD_LIMIT || 10);
+const defaultReportWindowLimit = Number(process.env.L0_COMPACT_WINDOW_LIMIT || 8);
 const allowedPriorities = new Set(['high', 'normal', 'low', 'ignore']);
 const allowedLevels = new Set(['L0', 'L1']);
 const messageFields = 'external_id, channel_id, channel, username, content, image_url, timestamp, priority';
@@ -65,7 +67,7 @@ function json(res, status, body) {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
     'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
     'access-control-allow-headers': 'authorization, content-type, x-api-key, x-filename'
   });
   res.end(payload);
@@ -82,9 +84,19 @@ function clampLimit(value) {
 }
 
 function clampReportLimit(value) {
-  const n = Number(value || 20);
-  if (!Number.isFinite(n)) return 20;
+  const n = Number(value || defaultReportWindowLimit);
+  if (!Number.isFinite(n)) return defaultReportWindowLimit;
   return Math.min(100, Math.max(1, Math.floor(n)));
+}
+
+function clampCardLimit(value) {
+  const n = Number(value || defaultL1CardLimit);
+  if (!Number.isFinite(n)) return defaultL1CardLimit;
+  return Math.min(50, Math.max(1, Math.floor(n)));
+}
+
+function isFullResponse(params) {
+  return ['1', 'true', 'yes', 'on'].includes(String(params.get('full') || '').trim().toLowerCase());
 }
 
 function parseCursor(value) {
@@ -291,6 +303,102 @@ function normalizeReport(input) {
     source_state_ids: normalizeStringArray(input.source_state_ids, 'source_state_ids'),
     source_message_ids: normalizeStringArray(input.source_message_ids, 'source_message_ids')
   };
+}
+
+function sourceTimestampFromId(externalId) {
+  const match = String(externalId || '').match(/:(\d{10})/);
+  return match ? Number(match[1]) : 0;
+}
+
+function compactChannelState(state, params) {
+  if (!state || isFullResponse(params)) return state;
+
+  const maxCards = clampCardLimit(params.get('card_limit'));
+  const cards = Array.isArray(state.cards) ? state.cards : [];
+  if (cards.length <= maxCards) {
+    return {
+      ...state,
+      compact: {
+        cards_shown: cards.length,
+        cards_total: cards.length
+      }
+    };
+  }
+
+  const sourceIds = new Set(Array.isArray(state.source_message_ids) ? state.source_message_ids : []);
+  const priorityRank = { high: 3, normal: 2, low: 1, ignore: 0 };
+  const ranked = cards
+    .map((card, index) => {
+      const messageIds = Array.isArray(card.message_ids) ? card.message_ids : [];
+      const freshCount = messageIds.filter((id) => sourceIds.has(id)).length;
+      const latestSourceTs = messageIds.reduce((latest, id) => Math.max(latest, sourceTimestampFromId(id)), 0);
+      return {
+        card,
+        index,
+        freshCount,
+        latestSourceTs,
+        rank: priorityRank[String(card.priority || 'normal').toLowerCase()] ?? 0
+      };
+    })
+    .sort((a, b) =>
+      b.freshCount - a.freshCount ||
+      b.rank - a.rank ||
+      b.latestSourceTs - a.latestSourceTs ||
+      a.index - b.index
+    )
+    .slice(0, maxCards)
+    .sort((a, b) => a.index - b.index)
+    .map((item) => item.card);
+
+  return {
+    ...state,
+    markdown: ranked.map((card) => `- **${card.title || 'Untitled'}** ${card.body || ''}`.trim()).join('\n'),
+    cards: ranked,
+    compact: {
+      cards_shown: ranked.length,
+      cards_total: cards.length
+    }
+  };
+}
+
+function reportUpdatedMs(report) {
+  const ms = Date.parse(report?.updated_at || report?.created_at || '');
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function compactReportsByWindow(reports, limit) {
+  const byWindow = new Map();
+  for (const report of reports) {
+    const key = `${report.channel_id}|${report.level}|${report.window_start}|${report.window_end}`;
+    const current = byWindow.get(key);
+    if (!current) {
+      byWindow.set(key, report);
+      continue;
+    }
+    const currentSourceCount = Array.isArray(current.source_message_ids) ? current.source_message_ids.length : 0;
+    const nextSourceCount = Array.isArray(report.source_message_ids) ? report.source_message_ids.length : 0;
+    if (
+      reportUpdatedMs(report) > reportUpdatedMs(current) ||
+      (reportUpdatedMs(report) === reportUpdatedMs(current) && nextSourceCount > currentSourceCount)
+    ) {
+      byWindow.set(key, report);
+    }
+  }
+
+  return [...byWindow.values()]
+    .sort((a, b) =>
+      Number(b.window_end || 0) - Number(a.window_end || 0) ||
+      reportUpdatedMs(b) - reportUpdatedMs(a) ||
+      String(b.report_id || '').localeCompare(String(a.report_id || ''))
+    )
+    .slice(0, limit)
+    .map((report, index, list) => ({
+      ...report,
+      compact: {
+        reports_shown: list.length,
+        grouped_by_window: true
+      }
+    }));
 }
 
 async function initDb() {
@@ -533,7 +641,7 @@ async function getChannelState(params) {
        limit 1`,
       [channelId, level]
     );
-    return { status: 200, body: { state: result.rows[0] || null } };
+    return { status: 200, body: { state: compactChannelState(result.rows[0] || null, params) } };
   }
 
   const state = memoryChannelStates
@@ -544,7 +652,7 @@ async function getChannelState(params) {
       String(b.updated_at).localeCompare(String(a.updated_at)) ||
       b.state_id.localeCompare(a.state_id)
     )[0] || null;
-  return { status: 200, body: { state } };
+  return { status: 200, body: { state: compactChannelState(state, params) } };
 }
 
 async function upsertChannelState(state) {
@@ -600,6 +708,7 @@ async function getReports(params) {
   const limit = clampReportLimit(params.get('limit'));
   const channelId = String(params.get('channel_id') || '').trim();
   const level = normalizeLevel(params.get('level') || 'L0');
+  const compact = !isFullResponse(params);
 
   if (level !== 'L0') return { status: 400, body: { error: 'level must be L0' } };
 
@@ -610,7 +719,7 @@ async function getReports(params) {
       values.push(channelId);
       where.push(`channel_id = $${values.length}`);
     }
-    values.push(limit);
+    values.push(compact ? Math.min(100, limit * 6) : limit);
     const result = await pool.query(
       `select ${reportFields}
        from reports
@@ -619,7 +728,7 @@ async function getReports(params) {
        limit $${values.length}`,
       values
     );
-    return { status: 200, body: { reports: result.rows } };
+    return { status: 200, body: { reports: compact ? compactReportsByWindow(result.rows, limit) : result.rows } };
   }
 
   const reports = memoryReports
@@ -629,8 +738,8 @@ async function getReports(params) {
       String(b.updated_at).localeCompare(String(a.updated_at)) ||
       b.report_id.localeCompare(a.report_id)
     )
-    .slice(0, limit);
-  return { status: 200, body: { reports } };
+    .slice(0, compact ? Math.min(100, limit * 6) : limit);
+  return { status: 200, body: { reports: compact ? compactReportsByWindow(reports, limit) : reports } };
 }
 
 async function upsertReport(report) {
@@ -684,6 +793,36 @@ async function upsertReport(report) {
   const stored = { ...report, created_at: now, updated_at: now };
   memoryReports.push(stored);
   return stored;
+}
+
+async function deleteChannelState(stateId) {
+  const id = String(stateId || '').trim();
+  if (!id) return null;
+  if (dbReady) {
+    const result = await pool.query(
+      'delete from channel_states where state_id = $1 returning state_id',
+      [id]
+    );
+    return result.rows[0] || null;
+  }
+  const before = memoryChannelStates.length;
+  memoryChannelStates = memoryChannelStates.filter((item) => item.state_id !== id);
+  return memoryChannelStates.length < before ? { state_id: id } : null;
+}
+
+async function deleteReport(reportId) {
+  const id = String(reportId || '').trim();
+  if (!id) return null;
+  if (dbReady) {
+    const result = await pool.query(
+      'delete from reports where report_id = $1 returning report_id',
+      [id]
+    );
+    return result.rows[0] || null;
+  }
+  const before = memoryReports.length;
+  memoryReports = memoryReports.filter((item) => item.report_id !== id);
+  return memoryReports.length < before ? { report_id: id } : null;
 }
 
 function extForImage(contentType, filename = '') {
@@ -841,7 +980,7 @@ async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'access-control-allow-origin': '*',
-      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
       'access-control-allow-headers': 'authorization, content-type, x-api-key, x-filename'
     });
     res.end();
@@ -898,6 +1037,21 @@ async function handler(req, res) {
       return;
     }
 
+    if (req.method === 'DELETE' && pathname.startsWith('/api/channel-state/')) {
+      if (!isAuthorized(req)) {
+        json(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const stateId = decodeURIComponent(pathname.slice('/api/channel-state/'.length));
+      const deleted = await deleteChannelState(stateId);
+      if (!deleted) {
+        json(res, 404, { error: 'channel state not found' });
+        return;
+      }
+      json(res, 200, { ok: true, deleted });
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/api/reports') {
       const result = await getReports(url.searchParams);
       json(res, result.status, result.body);
@@ -918,6 +1072,21 @@ async function handler(req, res) {
       }
       const report = await upsertReport(input);
       json(res, 200, { ok: true, report });
+      return;
+    }
+
+    if (req.method === 'DELETE' && pathname.startsWith('/api/reports/')) {
+      if (!isAuthorized(req)) {
+        json(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      const reportId = decodeURIComponent(pathname.slice('/api/reports/'.length));
+      const deleted = await deleteReport(reportId);
+      if (!deleted) {
+        json(res, 404, { error: 'report not found' });
+        return;
+      }
+      json(res, 200, { ok: true, deleted });
       return;
     }
 

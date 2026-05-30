@@ -205,6 +205,34 @@ async function api(path) {
   return body;
 }
 
+function writeApiKey() {
+  let key = localStorage.getItem('chatview.apiKey') || '';
+  if (!key) {
+    key = window.prompt('ChatView API key') || '';
+    if (key) localStorage.setItem('chatview.apiKey', key);
+  }
+  return key;
+}
+
+async function writeApi(path, options = {}) {
+  const key = writeApiKey();
+  if (!key) throw new Error('API key required');
+  const res = await fetch(path, {
+    ...options,
+    headers: {
+      accept: 'application/json',
+      'x-api-key': key,
+      ...(options.headers || {})
+    }
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (res.status === 401) localStorage.removeItem('chatview.apiKey');
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+  return body;
+}
+
 function cacheMessages(messages = []) {
   for (const message of messages) {
     if (message?.external_id) state.sourceMessages.set(message.external_id, message);
@@ -311,7 +339,7 @@ async function loadChannelState() {
   state.stateError = '';
   render();
   try {
-    const params = new URLSearchParams({ channel_id: state.activeChannelId, level: 'L1' });
+    const params = new URLSearchParams({ channel_id: state.activeChannelId, level: 'L1', card_limit: '10' });
     const data = await api(`/api/channel-state?${params.toString()}`);
     state.channelState = data.state || null;
     if (state.channelState) await hydrateSourceMessages(state.channelState);
@@ -329,7 +357,7 @@ async function loadReports() {
   state.reportsError = '';
   render();
   try {
-    const params = new URLSearchParams({ level: 'L0', limit: '20' });
+    const params = new URLSearchParams({ level: 'L0', limit: '8' });
     if (state.activeChannelId) params.set('channel_id', state.activeChannelId);
     const data = await api(`/api/reports?${params.toString()}`);
     state.reports = data.reports || [];
@@ -379,6 +407,35 @@ function activeChannel() {
 
 function activeReport() {
   return state.reports.find((report) => report.report_id === state.selectedReportId) || state.reports[0] || null;
+}
+
+async function deleteCurrentState() {
+  const snapshot = state.channelState;
+  if (!snapshot?.state_id) return;
+  if (!window.confirm(`Delete L1 state ${snapshot.state_id}?`)) return;
+  try {
+    await writeApi(`/api/channel-state/${encodeURIComponent(snapshot.state_id)}`, { method: 'DELETE' });
+    state.channelState = null;
+    await loadChannelState();
+  } catch (error) {
+    state.stateError = error.message;
+    render();
+  }
+}
+
+async function deleteCurrentReport() {
+  const report = activeReport();
+  if (!report?.report_id) return;
+  if (!window.confirm(`Delete L0 report ${report.report_id}?`)) return;
+  try {
+    await writeApi(`/api/reports/${encodeURIComponent(report.report_id)}`, { method: 'DELETE' });
+    state.reports = state.reports.filter((item) => item.report_id !== report.report_id);
+    state.selectedReportId = state.reports[0]?.report_id || '';
+    await loadReports();
+  } catch (error) {
+    state.reportsError = error.message;
+    render();
+  }
 }
 
 function visibleMessages() {
@@ -553,6 +610,8 @@ function l1Markup() {
   const channel = activeChannel();
   const snapshot = state.channelState;
   const cards = snapshot?.cards || [];
+  const totalCards = snapshot?.compact?.cards_total || cards.length;
+  const cardNote = snapshot && totalCards > cards.length ? `${cards.length}/${totalCards} cards` : `${cards.length} cards`;
 
   return `
     <section class="column l1 ${state.activeLayer === 'L1' ? 'active-layer' : ''}">
@@ -562,7 +621,8 @@ function l1Markup() {
         <p>${escapeHtml(channel?.channel || 'selected channel')}</p>
       </div>
       <div class="toolbar">
-        <span class="toolbar-note">${snapshot ? `${cards.length} cards` : 'waiting for API state'}</span>
+        <button class="danger" data-action="delete-state" ${snapshot?.state_id ? '' : 'disabled'}>Delete state</button>
+        <span class="toolbar-note">${snapshot ? cardNote : 'waiting for API state'}</span>
       </div>
       <div class="column-body">
         ${state.stateError ? `<div class="error">${escapeHtml(state.stateError)}</div>` : ''}
@@ -602,6 +662,7 @@ function l1Markup() {
 function l0Markup() {
   const channel = activeChannel();
   const selected = activeReport();
+  const reportNote = state.reports.length === 1 ? '1 hourly brief' : `${state.reports.length} hourly briefs`;
   return `
     <section class="column l0 ${state.activeLayer === 'L0' ? 'active-layer' : ''}">
       <div class="column-head">
@@ -610,7 +671,8 @@ function l0Markup() {
         <p>${escapeHtml(channel?.channel || 'selected channel')} · ${state.reports.length} loaded</p>
       </div>
       <div class="toolbar">
-        <span class="toolbar-note">${state.reports.length} reports</span>
+        <button class="danger" data-action="delete-report" ${selected?.report_id ? '' : 'disabled'}>Delete report</button>
+        <span class="toolbar-note">${reportNote}</span>
       </div>
       <div class="column-body">
         ${state.reportsError ? `<div class="error">${escapeHtml(state.reportsError)}</div>` : ''}
@@ -760,6 +822,14 @@ app.addEventListener('click', async (event) => {
 
   if (action === 'refresh-reports') {
     await loadReports();
+  }
+
+  if (action === 'delete-state') {
+    await deleteCurrentState();
+  }
+
+  if (action === 'delete-report') {
+    await deleteCurrentReport();
   }
 
   if (action === 'select-report') {

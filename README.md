@@ -98,7 +98,7 @@ The endpoint also accepts `x-api-key: <CHATVIEW_API_KEY>`. Writes are upserts by
 Latest channel state:
 
 ```http
-GET /api/channel-state?channel_id=26929515373@chatroom&level=L1
+GET /api/channel-state?channel_id=26929515373@chatroom&level=L1&card_limit=10
 ```
 
 Response:
@@ -109,7 +109,7 @@ Response:
 }
 ```
 
-When present, `state` contains the persisted snapshot fields.
+When present, `state` contains the persisted snapshot fields. By default the response is compacted to the highest-signal cards (`card_limit`, default 10) and includes `state.compact.cards_total`. Pass `full=1` to inspect the full stored snapshot.
 
 Upsert state:
 
@@ -141,12 +141,19 @@ Content-Type: application/json
 
 `state_id` is generated when omitted. Writes are idempotent by `(channel_id, level, window_start, window_end)`.
 
+Delete state:
+
+```http
+DELETE /api/channel-state/<state_id>
+Authorization: Bearer <CHATVIEW_API_KEY>
+```
+
 ## L0 Reports API
 
 List reports:
 
 ```http
-GET /api/reports?level=L0&channel_id=26929515373@chatroom&limit=20
+GET /api/reports?level=L0&channel_id=26929515373@chatroom&limit=8
 ```
 
 Response:
@@ -183,6 +190,15 @@ Content-Type: application/json
 ```
 
 `report_id` is generated when omitted. Writes are upserts by `report_id`.
+
+Report listing is compacted by default: at most one report is returned for each `(channel_id, level, window_start, window_end)` window, so old multi-report hours display as one hourly brief. Pass `full=1` to inspect every stored report.
+
+Delete report:
+
+```http
+DELETE /api/reports/<report_id>
+Authorization: Bearer <CHATVIEW_API_KEY>
+```
 
 ## Image Upload API
 
@@ -254,6 +270,7 @@ Cron defaults:
 
 - `RUN_L1=1`
 - `RUN_L0=1`
+- `L0_MAX_REPORTS=1`
 - `DECISION_BATCH_SIZE=20`
 - `CODEX_MODEL=gpt-5.5`
 - `CODEX_REASONING_EFFORT=low`
@@ -264,8 +281,8 @@ Cron defaults:
 | Layer | Job | Codex command | Model | Thinking |
 | --- | --- | --- | --- | --- |
 | L2 | Message filtering and `high/low` priority labeling | `codex exec` | `gpt-5.5` | `low` |
-| L1 | Hourly topic-state search/replace patches | `codex exec` | `gpt-5.5` | `low` |
-| L0 | Selective research report with reference links | `codex --search exec` | `gpt-5.5` | `low` |
+| L1 | Merged Zhishi topic-state search/replace patches | `codex exec` | `gpt-5.5` | `medium` |
+| L0 | Consolidated investment brief with search references and quotes | `codex --search exec` | `gpt-5.5` | `high` |
 
 L1 no longer lets the model rewrite the whole state. The model returns search/replace instructions against the current L1 card document with `match: "single"` only; the executor requires each search to match exactly one block and retries with the error if a patch fails. Hourly cron triggers the L0 stage after L1. The L0 model should return `skip` unless the latest L1 cards are high-signal and research-worthy; avoid all-hour historical L0 backfills.
 

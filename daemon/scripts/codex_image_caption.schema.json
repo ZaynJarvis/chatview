@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "visible_text", "market_relevance", "tickers"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "visible_text": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "market_relevance": {
+      "type": "string",
+      "enum": ["high", "low", "none"]
+    },
+    "tickers": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "maxLength": 12
+      }
+    }
+  }
+}
