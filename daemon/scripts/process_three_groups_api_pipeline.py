@@ -1624,8 +1624,8 @@ Return JSON only matching the provided schema.
 Goal:
 - Always review the sectors and individual stocks extracted by L1 topic state.
 - Use current facts, search, and the provided market quote API payload when useful.
-- Produce compact but decisive investment analysis: value-investing view, short-term trading strategy, catalysts, risk, invalidation, and action.
-- Output actionable recommendations for each stock/sector worth covering.
+- Produce compact but decisive investment analysis with the action first, then reason, risk, and analysis.
+- Output actionable recommendations for each stock/sector worth covering through reports[].targets. This structured target list is the primary UI surface.
 - Return at most {max_reports} report(s). Prefer one consolidated hourly stock-analysis brief over many separate posts.
 - Preserve references back to L2 source message ids through reports[].source_message_ids.
 
@@ -1633,14 +1633,18 @@ Rules:
 - action=skip only when L1 has no investable ticker/sector/theme. Do not skip because the analysis is hard.
 - If max_reports is 1, reports[] must contain exactly one consolidated report when action=post. This report must be a 个股分析 brief, not a single-theme deep research note.
 - The first report title should start with "个股分析：" unless there is only one dominant sector and no individual stock can be named.
-- The markdown must start with a "## 个股结论" section and include a compact table with these columns when individual tickers exist: 标的, 方向, 触发因素, 风险/失效, 短线动作, 中线动作.
-- Cover every important named ticker/company from L1 up to a practical maximum of 8. Rank them by actionability. Do not hide secondary stocks inside generic sector prose.
-- After the table, include "## 重点拆解" with 2-5 short subsections for the highest-signal tickers/themes. Only then add a "## 深研补充" section if a sector-level research angle is necessary.
+- reports[].targets must cover every important named ticker/company from L1 up to a practical maximum of 8. Rank targets by buy_score, where 100 means most worth buying now and 0 means least worth buying now. Sell/avoid/trim can still be urgent, but should rank below attractive buy/watch setups unless risk is the whole point.
+- For each target, put the direct action in primary_action and action_summary. Use primary_action values only: buy, sell, watch, hold, avoid, trim.
+- The target description should be one light Chinese line about the business/industry, for example "AI 服务器链，订单强但估值敏感". Do not write a paragraph.
+- Separate target fields clearly: core_points are the decision highlights; reasons are why; risks and invalidation are what would break the idea; details is optional deeper analysis.
+- short_term and long_term are optional in substance but must be strings. If there is no good short-term or long-term call, say "暂不明确" or "只观察，不追".
+- The markdown should be short Chinese detail text, not a wide table. Use it for a brief "整体判断" and extra context only; the UI will render targets separately.
 - Use search for current facts and references; prefer primary filings, IR/news releases, reputable market data, and current price context.
 - Include reference URLs in reports[].references.
 - Tie each report back to source_state_ids and source_message_ids.
 - Treat 🐯 and 🧀 as high-value investors. Their opinions are important evidence, but you still need to review price, valuation, catalysts, and risk.
 - Do not include generic "not investment advice" disclaimers or responsibility-avoidance language. Be direct about buy/hold/watch/avoid, position sizing, entry/exit levels when the evidence supports it.
+- Output Chinese only. Use normal Chinese that a Chinese investor can read quickly. Short sentences. No translation tone, no English research-report filler, no vague slogans.
 - Do not invent public facts, official roles, filings, quotes, earnings, or macro events. If search does not verify a factual claim with a credible source, either omit it or label it as group interpretation.
 - When the group mentions a public figure or event in shorthand, do not extrapolate it into a current official role or policy change unless a cited source verifies that exact fact.
 - Use exact dates for market/fundamental facts when they matter. The provided market_quotes payload is the trusted quote context for symbols it contains.
@@ -1652,6 +1656,59 @@ Rules:
 Input:
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 """.strip()
+
+
+def bounded_text_list(value, limit, max_items):
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = []
+    return [bounded_text(item, limit) for item in items if clean(item)][:max_items]
+
+
+def normalize_l0_targets(value):
+    targets = []
+    valid_actions = {"buy", "sell", "watch", "hold", "avoid", "trim"}
+    if not isinstance(value, list):
+        return targets
+    for target in value:
+        if not isinstance(target, dict):
+            continue
+        symbol = bounded_text(target.get("symbol"), 16).upper()
+        name = bounded_text(target.get("name"), 40)
+        primary_action = bounded_text(target.get("primary_action"), 16).lower()
+        if primary_action not in valid_actions:
+            primary_action = "watch"
+        try:
+            buy_score = float(target.get("buy_score"))
+        except (TypeError, ValueError):
+            buy_score = 0.0
+        buy_score = max(0.0, min(100.0, buy_score))
+        normalized = {
+            "symbol": symbol,
+            "name": name,
+            "industry": bounded_text(target.get("industry"), 40),
+            "description": bounded_text(target.get("description"), 90),
+            "primary_action": primary_action,
+            "action_summary": bounded_text(target.get("action_summary"), 80),
+            "buy_score": buy_score,
+            "short_term": bounded_text(target.get("short_term"), 120),
+            "long_term": bounded_text(target.get("long_term"), 120),
+            "core_points": bounded_text_list(target.get("core_points"), 80, 4),
+            "reasons": bounded_text_list(target.get("reasons"), 100, 4),
+            "risks": bounded_text_list(target.get("risks"), 100, 4),
+            "invalidation": bounded_text(target.get("invalidation"), 120),
+            "details": bounded_text(target.get("details"), 900),
+            "source_message_ids": [clean(item) for item in target.get("source_message_ids") or [] if clean(item)][:12],
+        }
+        if normalized["symbol"] or normalized["name"] or normalized["action_summary"]:
+            targets.append(normalized)
+        if len(targets) >= 10:
+            break
+    targets.sort(key=lambda item: item.get("buy_score", 0), reverse=True)
+    return targets
 
 
 def normalize_l0_result(result, max_reports):
@@ -1671,6 +1728,7 @@ def normalize_l0_result(result, max_reports):
         summary = bounded_text(report.get("summary"), 500)
         markdown = clean_text(report.get("markdown"))
         topics = [bounded_text(topic, 40) for topic in report.get("topics") or [] if clean(topic)][:10]
+        targets = normalize_l0_targets(report.get("targets"))
         references = []
         for ref in report.get("references") or []:
             if not isinstance(ref, dict):
@@ -1689,6 +1747,7 @@ def normalize_l0_result(result, max_reports):
                 "summary": summary,
                 "markdown": markdown,
                 "topics": topics,
+                "targets": targets,
                 "references": references,
                 "source_state_ids": source_state_ids,
                 "source_message_ids": source_message_ids,
@@ -1758,6 +1817,7 @@ def run_l0(args, l1_states, window_start, window_end):
                         "summary": report["summary"],
                         "markdown": report["markdown"],
                         "topics": report["topics"],
+                        "targets": report["targets"],
                         "references": report["references"],
                         "window_start": window_start,
                         "window_end": window_end,

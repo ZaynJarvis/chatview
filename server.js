@@ -38,6 +38,7 @@ const reportFields = [
   'markdown',
   'topics',
   'reference_items as "references"',
+  'target_items as "targets"',
   'window_start',
   'window_end',
   'source_state_ids',
@@ -248,6 +249,47 @@ function normalizeReferences(value) {
   }).filter((reference) => reference.title || reference.url);
 }
 
+function normalizeTargetTextArray(value, field) {
+  if (value == null) return [];
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+  return value.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 12);
+}
+
+function normalizeNumberValue(value, fallback = null) {
+  if (value == null || value === '') return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeTargets(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new Error('targets must be an array');
+  if (value.length > 50) throw new Error('targets must contain <= 50 items');
+  return value.map((target, index) => {
+    if (!target || typeof target !== 'object' || Array.isArray(target)) {
+      throw new Error(`targets[${index}] must be an object`);
+    }
+    return {
+      symbol: String(target.symbol || target.ticker || '').trim().toUpperCase(),
+      name: String(target.name || '').trim(),
+      industry: String(target.industry || target.sector || '').trim(),
+      description: String(target.description || target.one_line || '').trim(),
+      primary_action: String(target.primary_action || target.action || '').trim(),
+      action_summary: String(target.action_summary || '').trim(),
+      buy_score: normalizeNumberValue(target.buy_score ?? target.rank_score, null),
+      short_term: String(target.short_term || target.short_term_action || '').trim(),
+      long_term: String(target.long_term || target.long_term_action || '').trim(),
+      core_points: normalizeTargetTextArray(target.core_points, `targets[${index}].core_points`),
+      reasons: normalizeTargetTextArray(target.reasons, `targets[${index}].reasons`),
+      risks: normalizeTargetTextArray(target.risks, `targets[${index}].risks`),
+      invalidation: String(target.invalidation || '').trim(),
+      details: String(target.details || target.analysis || '').trim(),
+      source_message_ids: normalizeStringArray(target.source_message_ids || [], `targets[${index}].source_message_ids`)
+    };
+  }).filter((target) => target.symbol || target.name || target.primary_action || target.action_summary);
+}
+
 function normalizeChannelState(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new Error('channel state must be an object');
@@ -299,6 +341,7 @@ function normalizeReport(input) {
     markdown: input.markdown == null ? '' : String(input.markdown),
     topics: normalizeStringArray(input.topics, 'topics'),
     references: normalizeReferences(input.references),
+    targets: normalizeTargets(input.targets),
     ...window,
     source_state_ids: normalizeStringArray(input.source_state_ids, 'source_state_ids'),
     source_message_ids: normalizeStringArray(input.source_message_ids, 'source_message_ids')
@@ -484,6 +527,7 @@ async function initDb() {
         markdown text not null default '',
         topics jsonb not null default '[]'::jsonb,
         reference_items jsonb not null default '[]'::jsonb,
+        target_items jsonb not null default '[]'::jsonb,
         window_start bigint not null,
         window_end bigint not null,
         source_state_ids jsonb not null default '[]'::jsonb,
@@ -492,6 +536,7 @@ async function initDb() {
         updated_at timestamptz not null default now()
       )
     `);
+    await client.query("alter table reports add column if not exists target_items jsonb not null default '[]'::jsonb");
     await client.query('create index if not exists reports_latest_idx on reports (level, channel_id, window_end desc, updated_at desc)');
     await client.query(`
       create table if not exists uploaded_images (
@@ -775,8 +820,8 @@ async function upsertReport(report) {
   if (dbReady) {
     const result = await pool.query(
       `insert into reports
-       (report_id, level, channel_id, title, summary, markdown, topics, reference_items, window_start, window_end, source_state_ids, source_message_ids)
-       values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11::jsonb, $12::jsonb)
+       (report_id, level, channel_id, title, summary, markdown, topics, reference_items, target_items, window_start, window_end, source_state_ids, source_message_ids)
+       values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12::jsonb, $13::jsonb)
        on conflict (report_id) do update set
          level = excluded.level,
          channel_id = excluded.channel_id,
@@ -785,6 +830,7 @@ async function upsertReport(report) {
          markdown = excluded.markdown,
          topics = excluded.topics,
          reference_items = excluded.reference_items,
+         target_items = excluded.target_items,
          window_start = excluded.window_start,
          window_end = excluded.window_end,
          source_state_ids = excluded.source_state_ids,
@@ -800,6 +846,7 @@ async function upsertReport(report) {
         report.markdown,
         JSON.stringify(report.topics),
         JSON.stringify(report.references),
+        JSON.stringify(report.targets),
         report.window_start,
         report.window_end,
         JSON.stringify(report.source_state_ids),

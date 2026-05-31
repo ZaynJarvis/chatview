@@ -19,6 +19,7 @@
           "summary",
           "markdown",
           "topics",
+          "targets",
           "references",
           "source_state_ids",
           "source_message_ids"
@@ -42,6 +43,110 @@
             "items": {
               "type": "string",
               "maxLength": 40
+            }
+          },
+          "targets": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "symbol",
+                "name",
+                "industry",
+                "description",
+                "primary_action",
+                "action_summary",
+                "buy_score",
+                "short_term",
+                "long_term",
+                "core_points",
+                "reasons",
+                "risks",
+                "invalidation",
+                "details",
+                "source_message_ids"
+              ],
+              "properties": {
+                "symbol": {
+                  "type": "string",
+                  "maxLength": 16
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 40
+                },
+                "industry": {
+                  "type": "string",
+                  "maxLength": 40
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 90
+                },
+                "primary_action": {
+                  "type": "string",
+                  "enum": ["buy", "sell", "watch", "hold", "avoid", "trim"]
+                },
+                "action_summary": {
+                  "type": "string",
+                  "maxLength": 80
+                },
+                "buy_score": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "short_term": {
+                  "type": "string",
+                  "maxLength": 120
+                },
+                "long_term": {
+                  "type": "string",
+                  "maxLength": 120
+                },
+                "core_points": {
+                  "type": "array",
+                  "maxItems": 4,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 80
+                  }
+                },
+                "reasons": {
+                  "type": "array",
+                  "maxItems": 4,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 100
+                  }
+                },
+                "risks": {
+                  "type": "array",
+                  "maxItems": 4,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 100
+                  }
+                },
+                "invalidation": {
+                  "type": "string",
+                  "maxLength": 120
+                },
+                "details": {
+                  "type": "string",
+                  "maxLength": 900
+                },
+                "source_message_ids": {
+                  "type": "array",
+                  "maxItems": 12,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 220
+                  }
+                }
+              }
             }
           },
           "references": {

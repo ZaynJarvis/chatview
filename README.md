@@ -181,6 +181,25 @@ Content-Type: application/json
   "summary": "5 分钟可读摘要",
   "markdown": "markdown report with reference links and insight",
   "topics": ["Fed", "缩表", "风险偏好"],
+  "targets": [
+    {
+      "symbol": "DELL",
+      "name": "Dell Technologies",
+      "industry": "AI服务器",
+      "description": "AI服务器链，业绩兑现但毛利敏感",
+      "primary_action": "buy",
+      "action_summary": "回踩到计划区间再接，不追高",
+      "buy_score": 86,
+      "short_term": "402-410分批接，站回429再加",
+      "long_term": "业绩继续兑现可做核心仓",
+      "core_points": ["AI服务器收入和全年指引都在兑现"],
+      "reasons": ["订单、收入、EPS同时支撑"],
+      "risks": ["AI服务器毛利被重新定价"],
+      "invalidation": "跌破402且无法收回",
+      "details": "补充分析文本",
+      "source_message_ids": ["..."]
+    }
+  ],
   "references": [{"title": "source title", "url": "https://..."}],
   "window_start": 1779465600,
   "window_end": 1779469200,
@@ -191,7 +210,7 @@ Content-Type: application/json
 
 `report_id` is generated when omitted. Writes are upserts by `report_id`.
 
-Report listing is compacted by default: at most one report is returned for each `(channel_id, level, window_start, window_end)` window, so old multi-report hours display as one hourly brief. Pass `full=1` to inspect every stored report.
+Report listing is compacted by default: at most one report is returned for each `(channel_id, level, window_start, window_end)` window, so old multi-report hours display as one hourly brief. Pass `full=1` to inspect every stored report. `targets` are optional for old clients, but new L0 stock reports should use them so the UI can sort by `buy_score` and render action-first expandable cards.
 
 Delete report:
 
@@ -282,7 +301,7 @@ Cron defaults:
 | --- | --- | --- | --- | --- |
 | L2 | Message filtering and `high/low` priority labeling | `codex exec` | `gpt-5.5` | `low` |
 | L1 | Merged Zhishi topic-state search/replace patches | `codex exec` | `gpt-5.5` | `medium` |
-| L0 | Consolidated investment brief with search references and quotes | `codex --search exec` | `gpt-5.5` | `high` |
+| L0 | Consolidated investment action brief with target cards, search references, and quotes | `codex --search exec` | `gpt-5.5` | `high` |
 
 L1 no longer lets the model rewrite the whole state. The model returns search/replace instructions against the current L1 card document with `match: "single"` only; the executor requires each search to match exactly one block and retries with the error if a patch fails. Hourly cron triggers the L0 stage after L1. The L0 model should return `skip` unless the latest L1 cards are high-signal and research-worthy; avoid all-hour historical L0 backfills.
 

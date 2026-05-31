@@ -21,6 +21,8 @@ const state = {
   sourceMessages: new Map(),
   highlightedMessageId: '',
   lightbox: '',
+  expandedTargets: new Set(),
+  collapsedTargets: new Set(),
   forceL2ScrollTop: null
 };
 
@@ -29,6 +31,15 @@ const priorityMeta = {
   normal: { label: 'Normal', rank: 2 },
   low: { label: 'Low', rank: 1 },
   ignore: { label: 'Ignore', rank: 0 }
+};
+
+const actionMeta = {
+  buy: { label: 'BUY', text: '买入', tone: 'buy', rank: 6 },
+  watch: { label: 'WATCH', text: '观察', tone: 'watch', rank: 5 },
+  hold: { label: 'HOLD', text: '持有', tone: 'hold', rank: 4 },
+  trim: { label: 'TRIM', text: '减仓', tone: 'sell', rank: 3 },
+  sell: { label: 'SELL', text: '卖出', tone: 'sell', rank: 2 },
+  avoid: { label: 'AVOID', text: '回避', tone: 'avoid', rank: 1 }
 };
 
 function escapeHtml(value) {
@@ -319,6 +330,182 @@ function sourceIdsForState(snapshot) {
 
 function sourceIdsForReport(report) {
   return (report?.source_message_ids || []).filter(Boolean);
+}
+
+function compactList(value) {
+  if (value == null) return [];
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function compactCellText(value) {
+  return String(value || '')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function canonicalAction(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (actionMeta[raw]) return raw;
+  if (/avoid|回避|不碰|别碰/.test(raw)) return 'avoid';
+  if (/sell|卖|清仓/.test(raw)) return 'sell';
+  if (/trim|减|降仓/.test(raw)) return 'trim';
+  if (/buy|买|加仓|偏多|做多|回踩买/.test(raw)) return 'buy';
+  if (/hold|持有|拿着/.test(raw)) return 'hold';
+  return 'watch';
+}
+
+function scoreFromActionText(value) {
+  const raw = String(value || '').toLowerCase();
+  if (/avoid|回避|不碰|别碰/.test(raw)) return 8;
+  if (/sell|卖|清仓/.test(raw)) return 12;
+  if (/trim|减|降仓/.test(raw)) return 24;
+  if (/回踩买|买|加仓/.test(raw)) return 84;
+  if (/偏多|做多/.test(raw)) return 76;
+  if (/hold|持有|拿着/.test(raw)) return 58;
+  if (/观察|watch|试错|等|确认/.test(raw)) return 46;
+  return 34;
+}
+
+function actionLabel(action) {
+  return actionMeta[action]?.label || String(action || 'WATCH').toUpperCase();
+}
+
+function actionText(action) {
+  return actionMeta[action]?.text || '观察';
+}
+
+function markdownTableRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => compactCellText(cell));
+}
+
+function isMarkdownTableSeparator(line) {
+  const cells = markdownTableRow(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function firstMarkdownTable(markdown) {
+  const lines = String(markdown || '').split(/\r?\n/);
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    if (!lines[index].includes('|') || !isMarkdownTableSeparator(lines[index + 1] || '')) continue;
+    const header = markdownTableRow(lines[index]);
+    const rows = [];
+    let cursor = index + 2;
+    while (cursor < lines.length && lines[cursor].trim().includes('|')) {
+      rows.push(markdownTableRow(lines[cursor]));
+      cursor += 1;
+    }
+    return { lines, start: index, end: cursor - 1, header, rows };
+  }
+  return null;
+}
+
+function cellByHeader(row, header, names) {
+  for (const name of names) {
+    const index = header.findIndex((cell) => cell.includes(name));
+    if (index >= 0) return row[index] || '';
+  }
+  return '';
+}
+
+function parseMarkdownTargets(report) {
+  const table = firstMarkdownTable(report.markdown);
+  if (!table) return [];
+  const hasTargetColumn = table.header.some((cell) => cell.includes('标的'));
+  if (!hasTargetColumn) return [];
+  return table.rows.map((row) => {
+    const symbol = cellByHeader(row, table.header, ['标的', 'Ticker']).replace(/\s+/g, '').toUpperCase();
+    const direction = cellByHeader(row, table.header, ['方向', '动作']);
+    const reason = cellByHeader(row, table.header, ['触发因素', '原因', '催化']);
+    const risk = cellByHeader(row, table.header, ['风险/失效', '风险', '失效']);
+    const shortTerm = cellByHeader(row, table.header, ['短线动作', '短线']);
+    const longTerm = cellByHeader(row, table.header, ['中线动作', '长线动作', '中线', '长线']);
+    const action = canonicalAction(`${direction} ${shortTerm} ${longTerm}`);
+    return {
+      symbol,
+      name: '',
+      industry: '',
+      description: compactText(reason || direction, '', 56),
+      primary_action: action,
+      action_summary: direction || actionText(action),
+      buy_score: scoreFromActionText(`${direction} ${shortTerm} ${longTerm}`),
+      short_term: shortTerm,
+      long_term: longTerm,
+      core_points: [direction, reason].filter(Boolean).slice(0, 2),
+      reasons: reason ? [reason] : [],
+      risks: risk ? [risk] : [],
+      invalidation: risk,
+      details: '',
+      source_message_ids: sourceIdsForReport(report),
+      source: 'markdown'
+    };
+  }).filter((target) => target.symbol || target.action_summary);
+}
+
+function normalizeReportTargets(report) {
+  const structured = (report.targets || []).map((target) => {
+    const action = canonicalAction(target.primary_action || target.action_summary);
+    return {
+      symbol: String(target.symbol || '').trim().toUpperCase(),
+      name: String(target.name || '').trim(),
+      industry: String(target.industry || '').trim(),
+      description: String(target.description || '').trim(),
+      primary_action: action,
+      action_summary: String(target.action_summary || actionText(action)).trim(),
+      buy_score: Number.isFinite(Number(target.buy_score)) ? Number(target.buy_score) : scoreFromActionText(target.action_summary),
+      short_term: String(target.short_term || '').trim(),
+      long_term: String(target.long_term || '').trim(),
+      core_points: compactList(target.core_points).slice(0, 4),
+      reasons: compactList(target.reasons).slice(0, 4),
+      risks: compactList(target.risks).slice(0, 4),
+      invalidation: String(target.invalidation || '').trim(),
+      details: String(target.details || '').trim(),
+      source_message_ids: compactList(target.source_message_ids),
+      source: 'structured'
+    };
+  }).filter((target) => target.symbol || target.name || target.action_summary);
+
+  const targets = structured.length ? structured : parseMarkdownTargets(report);
+  return targets
+    .map((target, index) => ({ ...target, original_index: index }))
+    .sort((a, b) =>
+      Number(b.buy_score || 0) - Number(a.buy_score || 0) ||
+      (actionMeta[b.primary_action]?.rank || 0) - (actionMeta[a.primary_action]?.rank || 0) ||
+      a.original_index - b.original_index
+    );
+}
+
+function markdownWithoutConclusionTable(markdown) {
+  const table = firstMarkdownTable(markdown);
+  if (!table) return String(markdown || '').trim();
+  let start = table.start;
+  for (let index = table.start - 1; index >= 0; index -= 1) {
+    const line = table.lines[index].trim();
+    if (!line) {
+      start = index;
+      continue;
+    }
+    if (/^#{1,4}\s+个股结论/.test(line)) start = index;
+    break;
+  }
+  return [
+    ...table.lines.slice(0, start),
+    ...table.lines.slice(table.end + 1)
+  ].join('\n').trim();
+}
+
+function targetKey(report, target, index) {
+  return `${report.report_id}:${target.symbol || target.name || 'target'}:${index}`;
 }
 
 function messageById(externalId) {
@@ -750,10 +937,80 @@ function reportSourcesMarkup(report) {
   `;
 }
 
+function targetListMarkup(title, items) {
+  if (!items.length) return '';
+  return `
+    <section class="target-detail-section">
+      <h4>${escapeHtml(title)}</h4>
+      <ul>${items.map((item) => `<li>${inlineMarkdown(item)}</li>`).join('')}</ul>
+    </section>
+  `;
+}
+
+function targetCardMarkup(report, target, index) {
+  const key = targetKey(report, target, index);
+  const defaultOpen = index < 3;
+  const expanded = state.expandedTargets.has(key) || (defaultOpen && !state.collapsedTargets.has(key));
+  const title = [target.symbol, target.name].filter(Boolean).join(' · ') || `标的 ${index + 1}`;
+  const description = target.description || target.industry || '暂无行业描述';
+  const action = target.primary_action || 'watch';
+  const tone = actionMeta[action]?.tone || 'watch';
+  const corePoints = target.core_points.length ? target.core_points : [target.action_summary].filter(Boolean);
+  return `
+    <article class="target-card ${expanded ? 'expanded' : ''}">
+      <button class="target-toggle" data-action="toggle-target" data-target-key="${escapeHtml(key)}"
+        data-expanded="${expanded ? 'true' : 'false'}" aria-expanded="${expanded ? 'true' : 'false'}">
+        <span class="target-rank">${index + 1}</span>
+        <span class="target-main">
+          <span class="target-title">${escapeHtml(title)}</span>
+          <span class="target-desc">${escapeHtml(description)}</span>
+        </span>
+        <span class="target-action ${escapeHtml(tone)}">
+          <span>${escapeHtml(actionLabel(action))}</span>
+          <strong>${escapeHtml(target.buy_score || target.buy_score === 0 ? Math.round(target.buy_score) : '--')}</strong>
+        </span>
+      </button>
+      <div class="target-core">
+        <div class="target-action-line">
+          <span>动作</span>
+          <strong>${escapeHtml(target.action_summary || actionText(action))}</strong>
+        </div>
+        <div class="target-horizon">
+          ${target.short_term ? `<span><b>短线</b>${escapeHtml(target.short_term)}</span>` : ''}
+          ${target.long_term ? `<span><b>长线</b>${escapeHtml(target.long_term)}</span>` : ''}
+        </div>
+        ${corePoints.length ? `<ul class="target-core-points">${corePoints.map((point) => `<li>${inlineMarkdown(point)}</li>`).join('')}</ul>` : ''}
+      </div>
+      ${expanded ? `
+        <div class="target-details">
+          ${targetListMarkup('原因', target.reasons)}
+          ${targetListMarkup('风险', target.risks)}
+          ${target.invalidation ? `
+            <section class="target-detail-section">
+              <h4>失效条件</h4>
+              <p>${inlineMarkdown(target.invalidation)}</p>
+            </section>
+          ` : ''}
+          ${target.details ? `
+            <section class="target-detail-section">
+              <h4>分析</h4>
+              <p>${inlineMarkdown(target.details)}</p>
+            </section>
+          ` : ''}
+        </div>
+      ` : ''}
+    </article>
+  `;
+}
+
 function reportCardMarkup(report, selected) {
   const expanded = selected?.report_id === report.report_id;
   const topics = report.topics || [];
   const references = report.references || [];
+  const targets = normalizeReportTargets(report);
+  const detailMarkdown = targets.some((target) => target.source === 'markdown')
+    ? markdownWithoutConclusionTable(report.markdown)
+    : String(report.markdown || '').trim();
   return `
     <article class="report-card ${expanded ? 'expanded' : ''}">
       <button class="report-toggle" data-action="toggle-report" data-report-id="${escapeHtml(report.report_id)}"
@@ -770,7 +1027,17 @@ function reportCardMarkup(report, selected) {
       ${expanded ? `
         <div class="report-expanded">
           ${topics.length ? `<div class="topic-tags">${topics.map((topic) => `<span>${escapeHtml(topic)}</span>`).join('')}</div>` : ''}
-          <div class="markdown-body">${markdownMarkup(report.markdown)}</div>
+          ${targets.length ? `
+            <div class="target-stack">
+              ${targets.map((target, index) => targetCardMarkup(report, target, index)).join('')}
+            </div>
+          ` : ''}
+          ${detailMarkdown ? `
+            <section class="report-detail-block">
+              <h3>详情</h3>
+              <div class="markdown-body">${markdownMarkup(detailMarkdown)}</div>
+            </section>
+          ` : targets.length ? '' : `<div class="markdown-body">${markdownMarkup(report.markdown)}</div>`}
           ${references.length ? `
             <h3>References</h3>
             <div class="reference-list">
@@ -797,8 +1064,8 @@ function l0Markup() {
   return `
     <section class="column l0 ${state.activeLayer === 'L0' ? 'active-layer' : ''}">
       <div class="column-head">
-        <div class="column-title"><b>L0</b> Deep research</div>
-        <h1>Research reports</h1>
+        <div class="column-title"><b>L0</b> Action layer</div>
+        <h1>Investment actions</h1>
         <p>${escapeHtml(channel?.channel || 'selected channel')} · ${state.reports.length} loaded</p>
       </div>
       <div class="toolbar">
@@ -892,6 +1159,8 @@ app.addEventListener('click', async (event) => {
     state.reports = [];
     state.reportsError = '';
     state.selectedReportId = '';
+    state.expandedTargets = new Set();
+    state.collapsedTargets = new Set();
     state.highlightedMessageId = '';
     await Promise.all([
       loadMessages({ reset: true }),
@@ -936,6 +1205,20 @@ app.addEventListener('click', async (event) => {
   if (action === 'toggle-report') {
     state.selectedReportId = state.selectedReportId === target.dataset.reportId ? '' : target.dataset.reportId;
     if (state.selectedReportId) await hydrateReportSourceMessages(activeReport());
+    render();
+  }
+
+  if (action === 'toggle-target') {
+    const key = target.dataset.targetKey;
+    if (!key) return;
+    const expanded = target.dataset.expanded === 'true';
+    if (expanded) {
+      state.expandedTargets.delete(key);
+      state.collapsedTargets.add(key);
+    } else {
+      state.collapsedTargets.delete(key);
+      state.expandedTargets.add(key);
+    }
     render();
   }
 
