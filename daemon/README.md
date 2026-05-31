@@ -65,7 +65,7 @@ Stage differences:
 - Image messages are uploaded and also passed through a Codex VLM caption step using `codex_image_caption.schema.json`; the local L1/L0 prompts can use the extracted image evidence.
 - L1 topic state uses `codex exec` with `codex_l1_state.schema.json`. The two Zhishi US-stock groups are merged into one analysis scope, then posted back to both source channels for ChatView compatibility. The model can only return search/replace instructions against the current L1 card document with `match: "single"`; each search must match exactly once, and failed patches are retried with the executor error.
 - L0 research uses `codex --search exec` with `codex_l0_reports.schema.json`. These reports now act as the investment-advice layer: they review the L1 sectors/stocks with current facts, Stooq quote data by default, value-investing framing, short-term strategy, risks, invalidation, and source message references.
-- L0 defaults to one consolidated hourly investment brief (`L0_MAX_REPORTS=1`), with individual stocks/sectors ranked inside the brief instead of split into many posts.
+- L0 defaults to one consolidated hourly stock-analysis brief (`L0_MAX_REPORTS=1`). The report must prioritize 个股分析 with named tickers, ranked actions, catalysts, risks, and short/mid-term moves; sector deep research is only a follow-up section inside that brief.
 - L0 report IDs are stable by channel/window/ordinal, so rerunning a window updates the same report slot instead of creating another post when the title changes.
 
 Cron defaults to `RUN_L0=1`, so L0 is invoked after hourly L1 output. The L0 prompt is selective and should return `skip` for thin or stale topics.

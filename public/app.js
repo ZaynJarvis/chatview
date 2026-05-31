@@ -145,10 +145,65 @@ function markdownMarkup(markdown) {
     list = [];
   }
 
-  for (const rawLine of lines) {
+  function splitTableRow(line) {
+    return line
+      .trim()
+      .replace(/^\|/, '')
+      .replace(/\|$/, '')
+      .split('|')
+      .map((cell) => cell.trim());
+  }
+
+  function isTableSeparator(line) {
+    const cells = splitTableRow(line);
+    return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  }
+
+  function tableMarkup(startIndex) {
+    const header = splitTableRow(lines[startIndex]);
+    if (header.length < 2 || !isTableSeparator(lines[startIndex + 1] || '')) return null;
+
+    const rows = [];
+    let cursor = startIndex + 2;
+    while (cursor < lines.length) {
+      const rowLine = lines[cursor].trim();
+      if (!rowLine || !rowLine.includes('|')) break;
+      const cells = splitTableRow(rowLine);
+      if (cells.length < 2) break;
+      rows.push(cells);
+      cursor += 1;
+    }
+
+    return {
+      nextIndex: cursor - 1,
+      html: `
+        <div class="table-scroll">
+          <table class="markdown-table">
+            <thead><tr>${header.map((cell) => `<th>${inlineMarkdown(cell)}</th>`).join('')}</tr></thead>
+            <tbody>
+              ${rows.map((row) => `
+                <tr>${header.map((_, index) => `<td>${inlineMarkdown(row[index] || '')}</td>`).join('')}</tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `
+    };
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index];
     const line = rawLine.trim();
     if (!line) {
       flushList();
+      continue;
+    }
+
+    const table = tableMarkup(index);
+    if (table) {
+      flushList();
+      parts.push(table.html);
+      index = table.nextIndex;
       continue;
     }
 
@@ -262,6 +317,10 @@ function sourceIdsForState(snapshot) {
   return [...ids];
 }
 
+function sourceIdsForReport(report) {
+  return (report?.source_message_ids || []).filter(Boolean);
+}
+
 function messageById(externalId) {
   return state.messages.find((message) => message.external_id === externalId)
     || state.sourceMessages.get(externalId)
@@ -276,6 +335,23 @@ async function fetchMessage(externalId) {
 
 async function hydrateSourceMessages(snapshot) {
   const missing = sourceIdsForState(snapshot).filter((id) => !messageById(id));
+  await Promise.allSettled(missing.map(async (id) => {
+    try {
+      await fetchMessage(id);
+    } catch {
+      state.sourceMessages.set(id, {
+        external_id: id,
+        username: 'Unavailable',
+        content: 'Message not found',
+        priority: 'ignore',
+        missing: true
+      });
+    }
+  }));
+}
+
+async function hydrateReportSourceMessages(report) {
+  const missing = sourceIdsForReport(report).slice(0, 12).filter((id) => !messageById(id));
   await Promise.allSettled(missing.map(async (id) => {
     try {
       await fetchMessage(id);
@@ -364,6 +440,7 @@ async function loadReports() {
     if (!state.reports.some((report) => report.report_id === state.selectedReportId)) {
       state.selectedReportId = state.reports[0]?.report_id || '';
     }
+    if (state.selectedReportId) await hydrateReportSourceMessages(activeReport());
   } catch (error) {
     state.reports = [];
     state.selectedReportId = '';
@@ -406,7 +483,8 @@ function activeChannel() {
 }
 
 function activeReport() {
-  return state.reports.find((report) => report.report_id === state.selectedReportId) || state.reports[0] || null;
+  if (!state.selectedReportId) return null;
+  return state.reports.find((report) => report.report_id === state.selectedReportId) || null;
 }
 
 async function deleteCurrentState() {
@@ -659,6 +737,59 @@ function l1Markup() {
   `;
 }
 
+function reportSourcesMarkup(report) {
+  const ids = sourceIdsForReport(report);
+  if (!ids.length) return '';
+  const visibleIds = ids.slice(0, 8);
+  const hiddenCount = ids.length - visibleIds.length;
+  return `
+    <div class="report-source-list">
+      ${visibleIds.map(sourceMessageMarkup).join('')}
+      ${hiddenCount > 0 ? `<span class="source-more">+${hiddenCount} more source messages</span>` : ''}
+    </div>
+  `;
+}
+
+function reportCardMarkup(report, selected) {
+  const expanded = selected?.report_id === report.report_id;
+  const topics = report.topics || [];
+  const references = report.references || [];
+  return `
+    <article class="report-card ${expanded ? 'expanded' : ''}">
+      <button class="report-toggle" data-action="toggle-report" data-report-id="${escapeHtml(report.report_id)}"
+        aria-expanded="${expanded ? 'true' : 'false'}">
+        <span class="report-toggle-main">
+          <span class="report-title">${escapeHtml(report.title || 'Untitled report')}</span>
+          ${report.summary ? `<span class="report-summary">${escapeHtml(compactText(report.summary, '', 132))}</span>` : ''}
+        </span>
+        <span class="report-meta">
+          <span>${escapeHtml(formatTimestamp(report.window_end) || '')}</span>
+          <span>${(report.source_message_ids || []).length} msg</span>
+        </span>
+      </button>
+      ${expanded ? `
+        <div class="report-expanded">
+          ${topics.length ? `<div class="topic-tags">${topics.map((topic) => `<span>${escapeHtml(topic)}</span>`).join('')}</div>` : ''}
+          <div class="markdown-body">${markdownMarkup(report.markdown)}</div>
+          ${references.length ? `
+            <h3>References</h3>
+            <div class="reference-list">
+              ${references.map((reference) => {
+                const href = safeHref(reference.url);
+                const label = reference.title || reference.url || 'Reference';
+                return href
+                  ? `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
+                  : `<span>${escapeHtml(label)}</span>`;
+              }).join('')}
+            </div>
+          ` : ''}
+          ${reportSourcesMarkup(report)}
+        </div>
+      ` : ''}
+    </article>
+  `;
+}
+
 function l0Markup() {
   const channel = activeChannel();
   const selected = activeReport();
@@ -685,39 +816,9 @@ function l0Markup() {
           </div>
         ` : ''}
         ${state.reports.length ? `
-          <div class="report-list">
-            ${state.reports.map((report) => `
-              <button class="report-item ${selected?.report_id === report.report_id ? 'active' : ''}"
-                data-action="select-report" data-report-id="${escapeHtml(report.report_id)}">
-                <strong>${escapeHtml(report.title || 'Untitled report')}</strong>
-              </button>
-            `).join('')}
+          <div class="report-stack">
+            ${state.reports.map((report) => reportCardMarkup(report, selected)).join('')}
           </div>
-        ` : ''}
-        ${selected ? `
-          <article class="report-shell">
-            <div class="report-eyebrow">Deep research · L0 · ${escapeHtml(selected.report_id)}</div>
-            <h2>${escapeHtml(selected.title || 'Untitled report')}</h2>
-            ${selected.summary ? `<p class="exec">${escapeHtml(selected.summary)}</p>` : ''}
-            ${(selected.topics || []).length ? `<div class="topic-tags">${selected.topics.map((topic) => `<span>${escapeHtml(topic)}</span>`).join('')}</div>` : ''}
-            <div class="markdown-body">${markdownMarkup(selected.markdown)}</div>
-            ${(selected.references || []).length ? `
-              <h3>References</h3>
-              <div class="reference-list">
-                ${selected.references.map((reference) => {
-                  const href = safeHref(reference.url);
-                  const label = reference.title || reference.url || 'Reference';
-                  return href
-                    ? `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
-                    : `<span>${escapeHtml(label)}</span>`;
-                }).join('')}
-              </div>
-            ` : ''}
-            <div class="report-sources">
-              <span>${(selected.source_state_ids || []).length} state sources</span>
-              <span>${(selected.source_message_ids || []).length} message sources</span>
-            </div>
-          </article>
         ` : ''}
       </div>
     </section>
@@ -832,8 +933,9 @@ app.addEventListener('click', async (event) => {
     await deleteCurrentReport();
   }
 
-  if (action === 'select-report') {
-    state.selectedReportId = target.dataset.reportId;
+  if (action === 'toggle-report') {
+    state.selectedReportId = state.selectedReportId === target.dataset.reportId ? '' : target.dataset.reportId;
+    if (state.selectedReportId) await hydrateReportSourceMessages(activeReport());
     render();
   }
 

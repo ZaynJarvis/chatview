@@ -1592,12 +1592,16 @@ Goal:
 - Use current facts, search, and the provided market quote API payload when useful.
 - Produce compact but decisive investment analysis: value-investing view, short-term trading strategy, catalysts, risk, invalidation, and action.
 - Output actionable recommendations for each stock/sector worth covering.
-- Return at most {max_reports} report(s). Prefer one consolidated hourly investment brief with subsections for stocks/sectors over many separate posts.
+- Return at most {max_reports} report(s). Prefer one consolidated hourly stock-analysis brief over many separate posts.
 - Preserve references back to L2 source message ids through reports[].source_message_ids.
 
 Rules:
 - action=skip only when L1 has no investable ticker/sector/theme. Do not skip because the analysis is hard.
-- If max_reports is 1, reports[] must contain exactly one consolidated report when action=post. Put all actionable stock/sector recommendations inside that single report.
+- If max_reports is 1, reports[] must contain exactly one consolidated report when action=post. This report must be a 个股分析 brief, not a single-theme deep research note.
+- The first report title should start with "个股分析：" unless there is only one dominant sector and no individual stock can be named.
+- The markdown must start with a "## 个股结论" section and include a compact table with these columns when individual tickers exist: 标的, 方向, 触发因素, 风险/失效, 短线动作, 中线动作.
+- Cover every important named ticker/company from L1 up to a practical maximum of 8. Rank them by actionability. Do not hide secondary stocks inside generic sector prose.
+- After the table, include "## 重点拆解" with 2-5 short subsections for the highest-signal tickers/themes. Only then add a "## 深研补充" section if a sector-level research angle is necessary.
 - Use search for current facts and references; prefer primary filings, IR/news releases, reputable market data, and current price context.
 - Include reference URLs in reports[].references.
 - Tie each report back to source_state_ids and source_message_ids.
@@ -1609,7 +1613,7 @@ Rules:
 - Separate value-investing thesis from short-term strategy.
 - Mark uncertainty as specific decision conditions, not generic caveats.
 - Avoid generic background. Focus on what changed, why it matters, and what to do.
-- Do not overproduce reports. When several tickers are related, group them by theme and rank only the highest-value actions.
+- Do not overproduce reports. When several tickers are related, group them in the table by theme, but still name the individual stocks and rank the highest-value actions.
 
 Input:
 {json.dumps(payload, ensure_ascii=False, indent=2)}

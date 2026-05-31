@@ -305,6 +305,35 @@ function normalizeReport(input) {
   };
 }
 
+function normalizeResetInput(input) {
+  const body = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const keepMessagesSince = Number(body.keep_messages_since || 0);
+  const keepIntelligenceSince = Number(body.keep_intelligence_since || 0);
+  const clearMessages = body.clear_messages !== false;
+  const clearChannelStates = body.clear_channel_states !== false;
+  const clearReports = body.clear_reports !== false;
+  const channelIds = normalizeStringArray(body.channel_ids || [], 'channel_ids');
+
+  if (clearMessages && (!Number.isFinite(keepMessagesSince) || keepMessagesSince < 0)) {
+    throw new Error('keep_messages_since must be Unix seconds when provided');
+  }
+  if (!Number.isFinite(keepIntelligenceSince) || keepIntelligenceSince < 0) {
+    throw new Error('keep_intelligence_since must be Unix seconds when provided');
+  }
+  if (clearMessages && keepMessagesSince <= 0 && body.confirm !== 'delete-all') {
+    throw new Error('confirm must be "delete-all" when deleting all messages');
+  }
+
+  return {
+    keep_messages_since: Math.floor(keepMessagesSince),
+    keep_intelligence_since: Math.floor(keepIntelligenceSince),
+    clear_messages: clearMessages,
+    clear_channel_states: clearChannelStates,
+    clear_reports: clearReports,
+    channel_ids: channelIds
+  };
+}
+
 function sourceTimestampFromId(externalId) {
   const match = String(externalId || '').match(/:(\d{10})/);
   return match ? Number(match[1]) : 0;
@@ -825,6 +854,103 @@ async function deleteReport(reportId) {
   return memoryReports.length < before ? { report_id: id } : null;
 }
 
+function buildChannelDeleteClause(channelIds, values) {
+  if (!channelIds.length) return '';
+  values.push(channelIds);
+  return ` and channel_id = any($${values.length})`;
+}
+
+async function resetData(options) {
+  const summary = {
+    messages_deleted: 0,
+    channel_states_deleted: 0,
+    reports_deleted: 0
+  };
+
+  if (dbReady) {
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+
+      if (options.clear_messages) {
+        const values = [];
+        let where = 'true';
+        if (options.keep_messages_since > 0) {
+          values.push(options.keep_messages_since);
+          where = `timestamp < $${values.length}`;
+        }
+        where += buildChannelDeleteClause(options.channel_ids, values);
+        const result = await client.query(`delete from messages where ${where}`, values);
+        summary.messages_deleted = result.rowCount || 0;
+      }
+
+      if (options.clear_channel_states) {
+        const values = [];
+        let where = 'true';
+        if (options.keep_intelligence_since > 0) {
+          values.push(options.keep_intelligence_since);
+          where = `window_end < $${values.length}`;
+        }
+        where += buildChannelDeleteClause(options.channel_ids, values);
+        const result = await client.query(`delete from channel_states where ${where}`, values);
+        summary.channel_states_deleted = result.rowCount || 0;
+      }
+
+      if (options.clear_reports) {
+        const values = [];
+        let where = 'true';
+        if (options.keep_intelligence_since > 0) {
+          values.push(options.keep_intelligence_since);
+          where = `window_end < $${values.length}`;
+        }
+        where += buildChannelDeleteClause(options.channel_ids, values);
+        const result = await client.query(`delete from reports where ${where}`, values);
+        summary.reports_deleted = result.rowCount || 0;
+      }
+
+      await client.query('commit');
+      return summary;
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  if (options.clear_messages) {
+    const before = memoryMessages.length;
+    memoryMessages = memoryMessages.filter((message) => {
+      const channelMatch = !options.channel_ids.length || options.channel_ids.includes(message.channel_id);
+      const oldMessage = options.keep_messages_since <= 0 || Number(message.timestamp || 0) < options.keep_messages_since;
+      return !(channelMatch && oldMessage);
+    });
+    summary.messages_deleted = before - memoryMessages.length;
+  }
+
+  if (options.clear_channel_states) {
+    const before = memoryChannelStates.length;
+    memoryChannelStates = memoryChannelStates.filter((item) => {
+      const channelMatch = !options.channel_ids.length || options.channel_ids.includes(item.channel_id);
+      const oldState = options.keep_intelligence_since <= 0 || Number(item.window_end || 0) < options.keep_intelligence_since;
+      return !(channelMatch && oldState);
+    });
+    summary.channel_states_deleted = before - memoryChannelStates.length;
+  }
+
+  if (options.clear_reports) {
+    const before = memoryReports.length;
+    memoryReports = memoryReports.filter((item) => {
+      const channelMatch = !options.channel_ids.length || options.channel_ids.includes(item.channel_id);
+      const oldReport = options.keep_intelligence_since <= 0 || Number(item.window_end || 0) < options.keep_intelligence_since;
+      return !(channelMatch && oldReport);
+    });
+    summary.reports_deleted = before - memoryReports.length;
+  }
+
+  return summary;
+}
+
 function extForImage(contentType, filename = '') {
   const cleanType = String(contentType || '').split(';')[0].trim().toLowerCase();
   if (imageTypes.has(cleanType)) return imageTypes.get(cleanType);
@@ -1117,6 +1243,23 @@ async function handler(req, res) {
       const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
       const host = req.headers.host || `localhost:${port}`;
       json(res, 200, { image_url: `${proto}://${host}/uploads/${storedName}` });
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/api/admin/reset') {
+      if (!isAuthorized(req)) {
+        json(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      let options;
+      try {
+        options = normalizeResetInput(await readJson(req));
+      } catch (error) {
+        badRequest(res, error.message);
+        return;
+      }
+      const deleted = await resetData(options);
+      json(res, 200, { ok: true, deleted, options });
       return;
     }
 
