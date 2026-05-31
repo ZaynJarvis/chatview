@@ -996,6 +996,28 @@ def source_ids_for_state_payload(payload):
     return ids
 
 
+def external_id_prefix_index(local_by_id):
+    index = {}
+    for external_id in local_by_id:
+        match = re.match(r"^(.+@chatroom:\d{10})\d+$", str(external_id))
+        if not match:
+            continue
+        index.setdefault(match.group(1), []).append(external_id)
+    return index
+
+
+def resolve_external_id(external_id, local_by_id, prefix_index):
+    external_id = clean(external_id)
+    if not external_id:
+        return None
+    if external_id in local_by_id:
+        return external_id
+    matches = prefix_index.get(external_id) or []
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def ensure_cloud_source_messages(args, payload, local_by_id):
     if not args.cloud_state_endpoint:
         return
@@ -1005,28 +1027,39 @@ def ensure_cloud_source_messages(args, payload, local_by_id):
     available = set()
     posted = 0
     missing_local = []
+    prefix_index = external_id_prefix_index(local_by_id)
     for external_id in source_ids_for_state_payload(payload):
-        if cloud_message_exists(args, external_id):
-            available.add(external_id)
+        resolved_id = resolve_external_id(external_id, local_by_id, prefix_index)
+        if not resolved_id:
+            missing_local.append(external_id)
             continue
-        msg = local_by_id.get(external_id)
+        if cloud_message_exists(args, resolved_id):
+            available.add(resolved_id)
+            continue
+        msg = local_by_id.get(resolved_id)
         if not msg:
             missing_local.append(external_id)
             continue
         post_message_to_cloud(args, msg)
-        available.add(external_id)
+        available.add(resolved_id)
         posted += 1
 
+    def available_ids(values):
+        result = []
+        seen = set()
+        for external_id in values or []:
+            resolved_id = resolve_external_id(external_id, local_by_id, prefix_index)
+            if resolved_id in available and resolved_id not in seen:
+                seen.add(resolved_id)
+                result.append(resolved_id)
+        return result
+
     payload["source_message_ids"] = [
-        external_id for external_id in payload.get("source_message_ids", [])
-        if external_id in available
+        external_id for external_id in available_ids(payload.get("source_message_ids"))
     ]
     filtered_cards = []
     for card in payload.get("cards") or []:
-        message_ids = [
-            external_id for external_id in card.get("message_ids", [])
-            if external_id in available
-        ]
+        message_ids = available_ids(card.get("message_ids"))
         if not message_ids:
             continue
         filtered_cards.append({**card, "message_ids": message_ids})
@@ -1282,6 +1315,7 @@ Rules:
   message_ids: comma-separated source external_id values
   body: <= 50 Chinese/English characters
   {L1_CARD_END}
+- message_ids must be copied exactly from the input messages[].external_id strings. Do not shorten them to timestamp-only IDs, do not synthesize IDs, and do not remove the local suffix after the Unix timestamp.
 - Drop stale, duplicated, vague, or low-signal chatter by explicit replacement only.
 - Merge 芝士美股分享①群 and 芝士美股分享②群 into one combined view. Do not split output by group.
 - Prefer cards about investable sectors/tickers over generic market mood.
