@@ -929,7 +929,7 @@ function reportSourcesMarkup(report) {
   const visibleIds = ids.slice(0, 8);
   const hiddenCount = ids.length - visibleIds.length;
   return `
-    <div class="report-source-list">
+    <div class="report-source-list" data-report-source-list>
       ${visibleIds.map(sourceMessageMarkup).join('')}
       ${hiddenCount > 0 ? `<span class="source-more">+${hiddenCount} more source messages</span>` : ''}
     </div>
@@ -954,8 +954,24 @@ function targetCardMarkup(report, target, index) {
   const action = target.primary_action || 'watch';
   const tone = actionMeta[action]?.tone || 'watch';
   const corePoints = target.core_points.length ? target.core_points : [target.action_summary].filter(Boolean);
+  const detailsMarkup = [
+    targetListMarkup('原因', target.reasons),
+    targetListMarkup('风险', target.risks),
+    target.invalidation ? `
+      <section class="target-detail-section">
+        <h4>失效条件</h4>
+        <p>${inlineMarkdown(target.invalidation)}</p>
+      </section>
+    ` : '',
+    target.details ? `
+      <section class="target-detail-section">
+        <h4>分析</h4>
+        <p>${inlineMarkdown(target.details)}</p>
+      </section>
+    ` : ''
+  ].join('');
   return `
-    <article class="target-card ${expanded ? 'expanded' : ''}">
+    <article class="target-card ${expanded ? 'expanded' : ''}" data-target-card data-target-key="${escapeHtml(key)}">
       <button class="target-toggle" data-action="toggle-target" data-target-key="${escapeHtml(key)}"
         data-expanded="${expanded ? 'true' : 'false'}" aria-expanded="${expanded ? 'true' : 'false'}">
         <span class="target-rank">${index + 1}</span>
@@ -979,24 +995,7 @@ function targetCardMarkup(report, target, index) {
         </div>
         ${corePoints.length ? `<ul class="target-core-points">${corePoints.map((point) => `<li>${inlineMarkdown(point)}</li>`).join('')}</ul>` : ''}
       </div>
-      ${expanded ? `
-        <div class="target-details">
-          ${targetListMarkup('原因', target.reasons)}
-          ${targetListMarkup('风险', target.risks)}
-          ${target.invalidation ? `
-            <section class="target-detail-section">
-              <h4>失效条件</h4>
-              <p>${inlineMarkdown(target.invalidation)}</p>
-            </section>
-          ` : ''}
-          ${target.details ? `
-            <section class="target-detail-section">
-              <h4>分析</h4>
-              <p>${inlineMarkdown(target.details)}</p>
-            </section>
-          ` : ''}
-        </div>
-      ` : ''}
+      ${detailsMarkup.trim() ? `<div class="target-details" data-target-details ${expanded ? '' : 'hidden'}>${detailsMarkup}</div>` : ''}
     </article>
   `;
 }
@@ -1010,7 +1009,7 @@ function reportCardMarkup(report, selected) {
     ? markdownWithoutConclusionTable(report.markdown)
     : String(report.markdown || '').trim();
   return `
-    <article class="report-card ${expanded ? 'expanded' : ''}">
+    <article class="report-card ${expanded ? 'expanded' : ''}" data-report-card data-report-id="${escapeHtml(report.report_id)}">
       <button class="report-toggle" data-action="toggle-report" data-report-id="${escapeHtml(report.report_id)}"
         aria-expanded="${expanded ? 'true' : 'false'}">
         <span class="report-toggle-main">
@@ -1022,35 +1021,33 @@ function reportCardMarkup(report, selected) {
           <span>${(report.source_message_ids || []).length} msg</span>
         </span>
       </button>
-      ${expanded ? `
-        <div class="report-expanded">
-          ${topics.length ? `<div class="topic-tags">${topics.map((topic) => `<span>${escapeHtml(topic)}</span>`).join('')}</div>` : ''}
-          ${targets.length ? `
-            <div class="target-stack">
-              ${targets.map((target, index) => targetCardMarkup(report, target, index)).join('')}
-            </div>
-          ` : ''}
-          ${detailMarkdown ? `
-            <section class="report-detail-block">
-              <h3>详情</h3>
-              <div class="markdown-body">${markdownMarkup(detailMarkdown)}</div>
-            </section>
-          ` : targets.length ? '' : `<div class="markdown-body">${markdownMarkup(report.markdown)}</div>`}
-          ${references.length ? `
-            <h3>References</h3>
-            <div class="reference-list">
-              ${references.map((reference) => {
-                const href = safeHref(reference.url);
-                const label = reference.title || reference.url || 'Reference';
-                return href
-                  ? `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
-                  : `<span>${escapeHtml(label)}</span>`;
-              }).join('')}
-            </div>
-          ` : ''}
-          ${reportSourcesMarkup(report)}
-        </div>
-      ` : ''}
+      <div class="report-expanded" data-report-expanded ${expanded ? '' : 'hidden'}>
+        ${topics.length ? `<div class="topic-tags">${topics.map((topic) => `<span>${escapeHtml(topic)}</span>`).join('')}</div>` : ''}
+        ${targets.length ? `
+          <div class="target-stack">
+            ${targets.map((target, index) => targetCardMarkup(report, target, index)).join('')}
+          </div>
+        ` : ''}
+        ${detailMarkdown ? `
+          <section class="report-detail-block">
+            <h3>详情</h3>
+            <div class="markdown-body">${markdownMarkup(detailMarkdown)}</div>
+          </section>
+        ` : targets.length ? '' : `<div class="markdown-body">${markdownMarkup(report.markdown)}</div>`}
+        ${references.length ? `
+          <h3>References</h3>
+          <div class="reference-list">
+            ${references.map((reference) => {
+              const href = safeHref(reference.url);
+              const label = reference.title || reference.url || 'Reference';
+              return href
+                ? `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`
+                : `<span>${escapeHtml(label)}</span>`;
+            }).join('')}
+          </div>
+        ` : ''}
+        ${reportSourcesMarkup(report)}
+      </div>
     </article>
   `;
 }
@@ -1131,6 +1128,41 @@ function scrollToLatestMessages() {
   });
 }
 
+function setReportExpanded(card, expanded) {
+  card.classList.toggle('expanded', expanded);
+  const toggle = card.querySelector('[data-action="toggle-report"]');
+  if (toggle) toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  const body = card.querySelector('[data-report-expanded]');
+  if (body) body.hidden = !expanded;
+}
+
+function syncReportExpansion() {
+  for (const card of document.querySelectorAll('[data-report-card]')) {
+    setReportExpanded(card, card.dataset.reportId === state.selectedReportId);
+  }
+}
+
+function refreshReportSourceList(reportId) {
+  const report = state.reports.find((item) => item.report_id === reportId);
+  if (!report) return;
+  for (const card of document.querySelectorAll('[data-report-card]')) {
+    if (card.dataset.reportId !== reportId) continue;
+    const sourceList = card.querySelector('[data-report-source-list]');
+    if (sourceList) sourceList.outerHTML = reportSourcesMarkup(report) || '';
+  }
+}
+
+function setTargetExpanded(card, expanded) {
+  card.classList.toggle('expanded', expanded);
+  const toggle = card.querySelector('[data-action="toggle-target"]');
+  if (toggle) {
+    toggle.dataset.expanded = expanded ? 'true' : 'false';
+    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  }
+  const details = card.querySelector('[data-target-details]');
+  if (details) details.hidden = !expanded;
+}
+
 app.addEventListener('scroll', async (event) => {
   const scroller = event.target;
   if (!(scroller instanceof HTMLElement) || !scroller.matches('.l2 .column-body')) return;
@@ -1201,21 +1233,29 @@ app.addEventListener('click', async (event) => {
   }
 
   if (action === 'toggle-report') {
-    state.selectedReportId = state.selectedReportId === target.dataset.reportId ? '' : target.dataset.reportId;
-    if (state.selectedReportId) await hydrateReportSourceMessages(activeReport());
-    render();
+    const reportId = target.dataset.reportId || '';
+    state.selectedReportId = state.selectedReportId === reportId ? '' : reportId;
+    syncReportExpansion();
+    if (state.selectedReportId) {
+      const openedReportId = state.selectedReportId;
+      await hydrateReportSourceMessages(activeReport());
+      refreshReportSourceList(openedReportId);
+    }
+    return;
   }
 
   if (action === 'toggle-target') {
     const key = target.dataset.targetKey;
     if (!key) return;
-    const expanded = target.dataset.expanded === 'true';
+    const card = target.closest('[data-target-card]');
+    const expanded = state.expandedTargets.has(key);
     if (expanded) {
       state.expandedTargets.delete(key);
     } else {
       state.expandedTargets.add(key);
     }
-    render();
+    if (card) setTargetExpanded(card, !expanded);
+    return;
   }
 
   if (action === 'source-message') {

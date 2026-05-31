@@ -1191,11 +1191,7 @@ def messages_for_group_window(messages, group, window_start, window_end, limit):
 def output_channels_for_group(group):
     if group.get("channel_id") != ZHISHI_MERGED_GROUP["channel_id"]:
         return [{"channel_id": group["channel_id"], "channel": group["channel"]}]
-    lookup = group_lookup()
-    return [
-        {"channel_id": channel_id, "channel": lookup[channel_id]["channel"]}
-        for channel_id in ["26929515373@chatroom", "25979223983@chatroom"]
-    ]
+    return [{"channel_id": ZHISHI_MERGED_GROUP["channel_id"], "channel": ZHISHI_MERGED_GROUP["channel"]}]
 
 
 def extract_state_response(data):

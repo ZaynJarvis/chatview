@@ -15,6 +15,11 @@ const defaultL1CardLimit = Number(process.env.L1_COMPACT_CARD_LIMIT || 10);
 const defaultReportWindowLimit = Number(process.env.L0_COMPACT_WINDOW_LIMIT || 8);
 const allowedPriorities = new Set(['high', 'normal', 'low', 'ignore']);
 const allowedLevels = new Set(['L0', 'L1']);
+const zhishiSourceChannelIds = ['25979223983@chatroom', '26929515373@chatroom'];
+const zhishiMergedChannel = {
+  channel_id: 'zhishi-us-stocks-merged',
+  channel: '芝士美股分享①②合并'
+};
 const messageFields = 'external_id, channel_id, channel, username, content, image_url, timestamp, priority';
 const channelStateFields = [
   'state_id',
@@ -114,6 +119,54 @@ function normalizePriority(value) {
 function normalizeLevel(value) {
   const level = String(value || '').trim().toUpperCase();
   return allowedLevels.has(level) ? level : null;
+}
+
+function isZhishiMergedChannel(channelId) {
+  return channelId === zhishiMergedChannel.channel_id;
+}
+
+function isZhishiSourceChannel(channelId) {
+  return zhishiSourceChannelIds.includes(channelId);
+}
+
+function messageChannelIdsFor(channelId) {
+  if (!channelId) return [];
+  return isZhishiMergedChannel(channelId) ? zhishiSourceChannelIds : [channelId];
+}
+
+function intelligenceChannelIdsFor(channelId) {
+  if (!channelId) return [];
+  return isZhishiMergedChannel(channelId)
+    ? [zhishiMergedChannel.channel_id, ...zhishiSourceChannelIds]
+    : [channelId];
+}
+
+function mergeZhishiChannels(rows) {
+  let zhishiCount = 0;
+  const output = [];
+  for (const row of rows) {
+    if (isZhishiSourceChannel(row.channel_id) || isZhishiMergedChannel(row.channel_id)) {
+      zhishiCount += Number(row.message_count || 0);
+    } else {
+      output.push(row);
+    }
+  }
+  if (zhishiCount > 0) {
+    output.push({
+      ...zhishiMergedChannel,
+      message_count: zhishiCount
+    });
+  }
+  return output.sort((a, b) => Number(b.message_count || 0) - Number(a.message_count || 0)
+    || String(a.channel || '').localeCompare(String(b.channel || '')));
+}
+
+function normalizeMergedReportChannel(report, requestedChannelId) {
+  if (!isZhishiMergedChannel(requestedChannelId) || !isZhishiSourceChannel(report?.channel_id)) return report;
+  return {
+    ...report,
+    channel_id: zhishiMergedChannel.channel_id
+  };
 }
 
 function generateId(prefix) {
@@ -560,7 +613,7 @@ async function getChannels() {
       group by channel_id
       order by message_count desc, channel asc
     `);
-    return result.rows;
+    return mergeZhishiChannels(result.rows);
   }
   const channels = new Map();
   for (const message of memoryMessages) {
@@ -572,7 +625,7 @@ async function getChannels() {
       message_count: 1
     });
   }
-  return [...channels.values()].sort((a, b) => b.message_count - a.message_count || a.channel.localeCompare(b.channel));
+  return mergeZhishiChannels([...channels.values()]);
 }
 
 async function getMessages(params) {
@@ -589,8 +642,9 @@ async function getMessages(params) {
     const where = [];
     const values = [];
     if (channelId) {
-      values.push(channelId);
-      where.push(`channel_id = $${values.length}`);
+      const channelIds = messageChannelIdsFor(channelId);
+      values.push(channelIds);
+      where.push(`channel_id = any($${values.length})`);
     }
     if (priority) {
       values.push(priority);
@@ -627,7 +681,10 @@ async function getMessages(params) {
   }
 
   let list = memoryMessages;
-  if (channelId) list = list.filter((message) => message.channel_id === channelId);
+  if (channelId) {
+    const channelIds = new Set(messageChannelIdsFor(channelId));
+    list = list.filter((message) => channelIds.has(message.channel_id));
+  }
   if (priority) list = list.filter((message) => message.priority === priority);
   list = [...list].sort((a, b) => b.timestamp - a.timestamp || b.external_id.localeCompare(a.external_id));
   const latestMessageTimestamp = list[0]?.timestamp || null;
@@ -706,22 +763,27 @@ async function getChannelState(params) {
   if (!channelId) return { status: 400, body: { error: 'channel_id is required' } };
   if (level !== 'L1') return { status: 400, body: { error: 'level must be L1' } };
 
+  const channelIds = intelligenceChannelIdsFor(channelId);
   if (dbReady) {
     const result = await pool.query(
       `select ${channelStateFields}
        from channel_states
-       where channel_id = $1 and level = $2
-       order by window_end desc, window_start desc, updated_at desc, state_id desc
+       where channel_id = any($1) and level = $2
+       order by window_end desc,
+         case when channel_id = $3 then 0 else 1 end,
+         window_start desc, updated_at desc, state_id desc
        limit 1`,
-      [channelId, level]
+      [channelIds, level, channelId]
     );
     return { status: 200, body: { state: compactChannelState(result.rows[0] || null, params) } };
   }
 
+  const channelSet = new Set(channelIds);
   const state = memoryChannelStates
-    .filter((item) => item.channel_id === channelId && item.level === level)
+    .filter((item) => channelSet.has(item.channel_id) && item.level === level)
     .sort((a, b) =>
       b.window_end - a.window_end ||
+      (a.channel_id === channelId ? -1 : 0) - (b.channel_id === channelId ? -1 : 0) ||
       b.window_start - a.window_start ||
       String(b.updated_at).localeCompare(String(a.updated_at)) ||
       b.state_id.localeCompare(a.state_id)
@@ -790,8 +852,8 @@ async function getReports(params) {
     const where = ['level = $1'];
     const values = [level];
     if (channelId) {
-      values.push(channelId);
-      where.push(`channel_id = $${values.length}`);
+      values.push(intelligenceChannelIdsFor(channelId));
+      where.push(`channel_id = any($${values.length})`);
     }
     values.push(compact ? Math.min(100, limit * 6) : limit);
     const result = await pool.query(
@@ -802,11 +864,16 @@ async function getReports(params) {
        limit $${values.length}`,
       values
     );
-    return { status: 200, body: { reports: compact ? compactReportsByWindow(result.rows, limit) : result.rows } };
+    const rows = channelId
+      ? result.rows.map((report) => normalizeMergedReportChannel(report, channelId))
+      : result.rows;
+    return { status: 200, body: { reports: compact ? compactReportsByWindow(rows, limit) : rows } };
   }
 
+  const channelSet = new Set(intelligenceChannelIdsFor(channelId));
   const reports = memoryReports
-    .filter((report) => report.level === level && (!channelId || report.channel_id === channelId))
+    .filter((report) => report.level === level && (!channelId || channelSet.has(report.channel_id)))
+    .map((report) => channelId ? normalizeMergedReportChannel(report, channelId) : report)
     .sort((a, b) =>
       b.window_end - a.window_end ||
       String(b.updated_at).localeCompare(String(a.updated_at)) ||
