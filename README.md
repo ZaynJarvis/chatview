@@ -208,7 +208,7 @@ Content-Type: application/json
 }
 ```
 
-`report_id` is generated when omitted. Writes are upserts by `report_id`.
+`report_id` is generated when omitted. Writes are upserts by `report_id`. The daemon uses stable `l0:latest:<channel+ordinal>` ids for L0 so each run refines the latest brief instead of creating a new report row every time.
 
 Report listing is compacted by default: at most one report is returned for each `(channel_id, level, window_start, window_end)` window, so old multi-report hours display as one hourly brief. Pass `full=1` to inspect every stored report. `targets` are optional for old clients, but new L0 stock reports should use them so the UI can sort by `buy_score` and render action-first expandable cards.
 

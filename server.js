@@ -18,7 +18,7 @@ const allowedLevels = new Set(['L0', 'L1']);
 const zhishiSourceChannelIds = ['25979223983@chatroom', '26929515373@chatroom'];
 const zhishiMergedChannel = {
   channel_id: 'zhishi-us-stocks-merged',
-  channel: '芝士美股分享①②合并'
+  channel: '芝士美股'
 };
 const messageFields = 'external_id, channel_id, channel, username, content, image_url, timestamp, priority';
 const channelStateFields = [

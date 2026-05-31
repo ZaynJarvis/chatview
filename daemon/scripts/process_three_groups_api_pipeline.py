@@ -29,7 +29,7 @@ GROUPS = [
 ZHISHI_GROUP_IDS = {"25979223983@chatroom", "26929515373@chatroom"}
 ZHISHI_MERGED_GROUP = {
     "channel_id": "zhishi-us-stocks-merged",
-    "channel": "芝士美股分享①②合并",
+    "channel": "芝士美股",
     "source_channel_ids": sorted(ZHISHI_GROUP_IDS),
 }
 
@@ -1688,7 +1688,72 @@ def fetch_market_quotes(args, symbols):
         return []
 
 
-def build_l0_prompt(group, state_payload, window_start, window_end, market_quotes, max_reports):
+def compact_previous_l0_report(report):
+    if not isinstance(report, dict):
+        return None
+    targets = []
+    for target in report.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        targets.append({
+            "symbol": bounded_text(target.get("symbol"), 16),
+            "name": bounded_text(target.get("name"), 40),
+            "primary_action": bounded_text(target.get("primary_action"), 16),
+            "action_summary": bounded_text(target.get("action_summary"), 100),
+            "buy_score": target.get("buy_score"),
+            "short_term": bounded_text(target.get("short_term"), 120),
+            "long_term": bounded_text(target.get("long_term"), 120),
+            "core_points": bounded_text_list(target.get("core_points"), 100, 4),
+            "risks": bounded_text_list(target.get("risks"), 100, 4),
+            "invalidation": bounded_text(target.get("invalidation"), 120),
+        })
+        if len(targets) >= 10:
+            break
+    return {
+        "report_id": clean_text(report.get("report_id")),
+        "title": bounded_text(report.get("title"), 120),
+        "summary": bounded_text(report.get("summary"), 500),
+        "markdown": bounded_text(report.get("markdown"), 1600),
+        "topics": bounded_text_list(report.get("topics"), 40, 10),
+        "targets": targets,
+        "window_start": report.get("window_start"),
+        "window_end": report.get("window_end"),
+        "updated_at": report.get("updated_at"),
+    }
+
+
+def get_latest_l0_report(args, channel_id):
+    if not args.cloud_reports_endpoint:
+        return None
+    try:
+        status, data = get_json(
+            args.cloud_reports_endpoint,
+            args.cloud_api_key,
+            args.cloud_timeout,
+            params={"channel_id": channel_id, "level": "L0", "limit": "1", "full": "1"},
+            missing_ok=True,
+        )
+        if status >= 400 or not isinstance(data, dict):
+            return None
+        reports = data.get("reports")
+        if isinstance(reports, list) and reports:
+            return compact_previous_l0_report(reports[0])
+    except Exception as exc:
+        append_jsonl(args.errors, {
+            "at": now_iso(),
+            "stage": "previous_l0_report",
+            "channel_id": channel_id,
+            "error": str(exc),
+        })
+    return None
+
+
+def iterative_l0_report_id(output_channel, index):
+    digest = hashlib.sha1(f"{output_channel['channel_id']}|{index}".encode("utf-8")).hexdigest()
+    return f"l0:latest:{digest}"
+
+
+def build_l0_prompt(group, state_payload, window_start, window_end, market_quotes, max_reports, previous_report=None):
     max_reports = max(1, int(max_reports or 1))
     payload = {
         "channel": group,
@@ -1702,6 +1767,7 @@ def build_l0_prompt(group, state_payload, window_start, window_end, market_quote
         "l1_state": state_payload,
         "market_quotes": market_quotes,
         "max_reports": max_reports,
+        "previous_l0_report": previous_report,
     }
     if is_slock_group(group):
         return f"""
@@ -1714,6 +1780,7 @@ Goal:
 - Help the user quickly see what happened, what matters, and what to follow up.
 - This is not an investment report. Do not output stock actions.
 - Return at most {max_reports} report(s). Prefer one concise consolidated brief.
+- Treat previous_l0_report as the current brief to improve. Update it in place conceptually: keep useful still-valid items, revise stale items, and add only genuinely new follow-ups.
 
 Rules:
 - action=skip only when L1 has no useful AI/product/technical topic.
@@ -1753,6 +1820,7 @@ Goal:
 - Output actionable recommendations for each stock/sector worth covering through reports[].targets. This structured target list is the primary UI surface.
 - Return at most {max_reports} report(s). Prefer one consolidated hourly stock-analysis brief over many separate posts.
 - Preserve references back to L2 source message ids through reports[].source_message_ids.
+- Treat previous_l0_report as the current action brief to improve, not as archive text to append to. Keep still-valid target calls, update changed calls, remove stale targets, and add new targets only when the latest L1 evidence changes the decision.
 
 Rules:
 - action=skip only when L1 has no investable ticker/sector/theme. Do not skip because the analysis is hard.
@@ -1776,7 +1844,8 @@ Rules:
 - Separate value-investing thesis from short-term strategy.
 - Mark uncertainty as specific decision conditions, not generic caveats.
 - Avoid generic background. Focus on what changed, why it matters, and what to do.
-- Do not overproduce reports. When several tickers are related, group them in the table by theme, but still name the individual stocks and rank the highest-value actions.
+- Do not overproduce reports. The system upserts the same L0 report id on each run, so your output should be a refined latest version rather than a new standalone historical post.
+- When several tickers are related, group them in the table by theme, but still name the individual stocks and rank the highest-value actions.
 
 Input:
 {json.dumps(payload, ensure_ascii=False, indent=2)}
@@ -1902,9 +1971,19 @@ def run_l0(args, l1_states, window_start, window_end):
         if not group:
             continue
         try:
+            output_channels = output_channels_for_group(group)
+            previous_report = get_latest_l0_report(args, output_channels[0]["channel_id"]) if output_channels else None
             ticker_text = json.dumps(state_payload, ensure_ascii=False)
             market_quotes = [] if is_slock_group(group) else fetch_market_quotes(args, extract_candidate_tickers(ticker_text))
-            prompt = build_l0_prompt(group, state_payload, window_start, window_end, market_quotes, args.l0_max_reports)
+            prompt = build_l0_prompt(
+                group,
+                state_payload,
+                window_start,
+                window_end,
+                market_quotes,
+                args.l0_max_reports,
+                previous_report,
+            )
             report_kind = "slock_ai" if is_slock_group(group) else "investment"
             out_path = args.codex_out_dir / f"l0_{report_kind}_{safe_filename(group['channel_id'])}_{window_start}_{window_end}.json"
             result = codex_exec_json(
@@ -1930,12 +2009,9 @@ def run_l0(args, l1_states, window_start, window_end):
                 summary["skipped"] += 1
                 continue
             for index, report in enumerate(normalized["reports"], start=1):
-                for output_channel in output_channels_for_group(group):
-                    digest = hashlib.sha1(
-                        f"{output_channel['channel_id']}|{window_start}|{window_end}|{index}".encode("utf-8")
-                    ).hexdigest()
+                for output_channel in output_channels:
                     payload = {
-                        "report_id": f"l0:{digest}",
+                        "report_id": iterative_l0_report_id(output_channel, index),
                         "level": "L0",
                         "channel_id": output_channel["channel_id"],
                         "channel": output_channel["channel"],
