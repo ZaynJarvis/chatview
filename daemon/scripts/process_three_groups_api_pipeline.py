@@ -18,10 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+SLOCK_GROUP_ID = "45271353210@chatroom"
+
 GROUPS = [
     {"channel_id": "25979223983@chatroom", "channel": "芝士美股分享①群"},
     {"channel_id": "26929515373@chatroom", "channel": "芝士美股分享②群"},
-    {"channel_id": "45271353210@chatroom", "channel": "Slock 中文社区（暂定）"},
+    {"channel_id": SLOCK_GROUP_ID, "channel": "Slock 中文社区（暂定）"},
 ]
 
 ZHISHI_GROUP_IDS = {"25979223983@chatroom", "26929515373@chatroom"}
@@ -198,8 +200,20 @@ def group_lookup():
     return out
 
 
+def is_slock_group(group):
+    return bool(group) and group.get("channel_id") == SLOCK_GROUP_ID
+
+
+def is_slock_message(msg):
+    return bool(msg) and msg.get("channel_id") == SLOCK_GROUP_ID
+
+
 def intelligence_groups():
-    return [ZHISHI_MERGED_GROUP]
+    lookup = group_lookup()
+    groups = [ZHISHI_MERGED_GROUP]
+    if SLOCK_GROUP_ID in lookup:
+        groups.append(lookup[SLOCK_GROUP_ID])
+    return groups
 
 
 def group_source_ids(group):
@@ -362,6 +376,24 @@ def build_decision_prompt(msg, raw):
         "image_keys": image_keys,
         "is_key_sender": key_sender,
     }
+    if is_slock_message(msg):
+        return f"""
+You are filtering WeChat messages for the Slock AI/product discussion group before they are sent to a frontend API.
+
+Return JSON only matching the provided schema:
+{{"action":"keep"|"delete","priority":"high"|"low"|null,"reason":"short reason"}}
+
+Decision policy for Slock:
+- Keep AI/product/engineering discussion: LLMs, agents, prompts, model behavior, coding tools, Studio, MCP, OpenViking, daemon/backend/frontend bugs, UX decisions, deployment notes, and concrete workflow ideas.
+- Mark high when the message contains a problem, decision, implementation detail, model/tool observation, product requirement, useful comparison, or follow-up worth summarizing.
+- Mark low for lightweight but still relevant AI/tool chatter.
+- Delete greetings, pure reactions, jokes, social coordination, duplicates, or messages with no standalone AI/product/technical signal.
+- If has_image is true, keep unless clearly a sticker; downstream image handling should inspect it.
+- If action is delete, priority must be null. If action is keep, priority must be high or low.
+
+Message payload:
+{json.dumps(payload, ensure_ascii=False, indent=2)}
+""".strip()
     return f"""
 You are filtering WeChat group messages before they are sent to a frontend API.
 
@@ -406,6 +438,8 @@ Return JSON only matching the provided schema:
 
 Decision policy:
 - Make one independent decision for every input message.external_id.
+- If message.channel_id is "{SLOCK_GROUP_ID}", use the Slock policy: keep AI/product/engineering discussion about LLMs, agents, prompts, model/tool behavior, coding tools, Studio, MCP, OpenViking, daemon/backend/frontend bugs, UX decisions, deployment notes, and concrete workflow ideas. Mark high for problems, decisions, implementation details, model/tool observations, product requirements, useful comparisons, or follow-ups worth summarizing. Mark low for lightweight but still relevant AI/tool chatter. Delete greetings, pure reactions, jokes, social coordination, duplicates, and messages with no standalone AI/product/technical signal.
+- For all other channels, use the market-intelligence policy below.
 - Keep only messages useful for downstream market intelligence, especially concrete analysis, decisions, predictions, news, tickers, sectors, positions, risks, notable links/images, or actionable trading/investing context.
 - Delete meaningless chatter: greetings, jokes, acknowledgements, pure reactions, very short off-topic replies, social coordination, duplicated noise, or messages with no standalone information.
 - Important speakers are strong keep candidates: 🐯 and 🧀 first; 天翼 and 一只腊鸡的阿西 / 一只辣鸡的阿西 are secondary.
@@ -449,7 +483,27 @@ def normalize_decision(decision):
 def heuristic_decision(msg, raw):
     username = msg["username"]
     content = msg["content"].strip()
+    content_lower = content.lower()
     has_image = bool(image_keys_for_message(raw))
+    if is_slock_message(msg):
+        if has_image:
+            return {"action": "keep", "priority": "high", "reason": "Slock image needs inspection"}
+        ai_terms = [
+            "AI", "Claude", "ChatGPT", "OpenAI", "Gemini", "Codex", "Cursor", "MCP", "LLM",
+            "模型", "智能体", "agent", "Agent", "prompt", "提示词", "上下文", "token", "语料",
+            "工具", "插件", "Studio", "OpenViking", "daemon", "前端", "后端", "部署", "bug",
+            "报错", "产品", "交互", "工作流", "workflow", "语音", "视频", "图像",
+            "版本", "任务", "幻觉", "report", "benchmark", "能力", "5.5", "4.7",
+        ]
+        high_terms = [
+            "需求", "问题", "原因", "方案", "修", "改", "验证", "复现", "失败", "不能",
+            "应该", "需要", "决定", "结论", "对比", "观察", "诚实", "神坛", "表现",
+            "不如", "版本", "相上下",
+        ]
+        if len(content) >= 4 and any(term.lower() in content_lower for term in ai_terms):
+            priority = "high" if any(term.lower() in content_lower for term in high_terms) or len(content) >= 18 else "low"
+            return {"action": "keep", "priority": priority, "reason": "Slock AI/product signal"}
+        return {"action": "delete", "priority": None, "reason": "Slock fallback deleted low-signal chatter"}
     if is_key_sender(username):
         if not content and not has_image:
             return {"action": "delete", "priority": None, "reason": "key sender but empty message"}
@@ -1282,6 +1336,45 @@ def build_l1_prompt(group, messages, previous_state, current_document, window_st
         "previous_patch_error": patch_error,
         "messages": [prompt_message_view(msg) for msg in messages],
     }
+    if is_slock_group(group):
+        return f"""
+You maintain the L1 state document for the Slock AI/product discussion group.
+
+Return JSON only matching the provided schema.
+
+Goal:
+- Turn filtered L2 messages into durable topic cards for AI products, agents, models, prompts, tooling, Studio, MCP/OpenViking, daemon/frontend/backend issues, UX decisions, and implementation follow-ups.
+- Preserve concrete requirements, bugs, causes, decisions, useful model/tool observations, and unresolved follow-ups.
+- Drop stale, duplicated, vague, or social-only chatter.
+- The executor converts the patched document back into frontend cards.
+
+Rules:
+- action=skip if there is no meaningful state update.
+- You may only change L1 content through replacements[] search/replace instructions.
+- Each replacement must set match="single"; no other match mode is supported.
+- Each replacement.search must be an exact substring copied from current_l1_document.
+- The executor supports only single-match replacement. If search matches 0 or more than 1 block, it errors and you must retry.
+- Do not use regex, ellipses, or prose placeholders inside search/replace.
+- Prefer replacing one complete L1_CARD block at a time, including the card boundary comments.
+- To add a card to an empty document, search exactly "{L1_EMPTY_DOCUMENT}" and replace it with a full L1_CARD block.
+- To append a card to a non-empty document, search one unique existing L1_CARD block and replace it with itself plus the new block.
+- To update a card, search the full old block and replace it with the revised full block.
+- To delete a stale card, search the full old block and replace it with an empty string.
+- If two identical blocks exist, search a larger unique substring; if no unique substring exists, return skip with a reason.
+- Use exactly this card format in replacement text:
+  {L1_CARD_START}
+  title: short Chinese title, preferably <= 18 characters
+  priority: high or low
+  message_ids: comma-separated source external_id values
+  body: <= 55 Chinese/English characters
+  {L1_CARD_END}
+- message_ids must be copied exactly from messages[].external_id. Do not shorten or synthesize IDs.
+- Use natural Chinese. Short, direct, no investment language, no translation tone.
+- Do not invent external facts; only summarize the group evidence.
+
+Input:
+{json.dumps(payload, ensure_ascii=False, indent=2)}
+""".strip()
     return f"""
 You maintain the L1 state document for the Zhishi US-stock intelligence feed.
 
@@ -1614,6 +1707,42 @@ def build_l0_prompt(group, state_payload, window_start, window_end, market_quote
         "market_quotes": market_quotes,
         "max_reports": max_reports,
     }
+    if is_slock_group(group):
+        return f"""
+You generate L0 reports for the Slock AI/product discussion group.
+
+Return JSON only matching the provided schema.
+
+Goal:
+- Convert the L1 topic state into a readable AI group brief.
+- Help the user quickly see what happened, what matters, and what to follow up.
+- This is not an investment report. Do not output stock actions.
+- Return at most {max_reports} report(s). Prefer one concise consolidated brief.
+
+Rules:
+- action=skip only when L1 has no useful AI/product/technical topic.
+- reports[].targets must be [].
+- Title should start with "AI群聊：" or "AI产品：" and name the main topic.
+- Markdown must be Chinese, natural, short, and easy to scan.
+- Put the most useful action/follow-up first, then core points, then details.
+- Use this markdown shape when useful:
+  ## 先做什么
+  - ...
+  ## 核心要点
+  - ...
+  ## 细节
+  - ...
+  ## 风险/未确认
+  - ...
+- topics should name concrete themes such as "Studio 生图", "MCP", "daemon", "模型行为", "产品交互".
+- Preserve source_state_ids and source_message_ids.
+- Use references only when you actually searched and verified an external public fact; otherwise references=[].
+- Do not invent facts, decisions, owners, timelines, or external news.
+- Output Chinese only. Use Chinese human language. No translation tone, no report filler, no generic slogan.
+
+Input:
+{json.dumps(payload, ensure_ascii=False, indent=2)}
+""".strip()
     return f"""
 You are the Codex investment review agent for the Zhishi US-stock feed.
 
@@ -1778,16 +1907,17 @@ def run_l0(args, l1_states, window_start, window_end):
             continue
         try:
             ticker_text = json.dumps(state_payload, ensure_ascii=False)
-            market_quotes = fetch_market_quotes(args, extract_candidate_tickers(ticker_text))
+            market_quotes = [] if is_slock_group(group) else fetch_market_quotes(args, extract_candidate_tickers(ticker_text))
             prompt = build_l0_prompt(group, state_payload, window_start, window_end, market_quotes, args.l0_max_reports)
-            out_path = args.codex_out_dir / f"l0_investment_{safe_filename(group['channel_id'])}_{window_start}_{window_end}.json"
+            report_kind = "slock_ai" if is_slock_group(group) else "investment"
+            out_path = args.codex_out_dir / f"l0_{report_kind}_{safe_filename(group['channel_id'])}_{window_start}_{window_end}.json"
             result = codex_exec_json(
                 args,
                 prompt,
                 args.l0_schema,
                 out_path,
                 args.l0_codex_timeout,
-                use_search=True,
+                use_search=not is_slock_group(group),
                 reasoning_effort=args.l0_reasoning_effort,
             )
             normalized = normalize_l0_result(result, args.l0_max_reports)

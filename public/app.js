@@ -22,7 +22,6 @@ const state = {
   highlightedMessageId: '',
   lightbox: '',
   expandedTargets: new Set(),
-  collapsedTargets: new Set(),
   forceL2ScrollTop: null
 };
 
@@ -949,8 +948,7 @@ function targetListMarkup(title, items) {
 
 function targetCardMarkup(report, target, index) {
   const key = targetKey(report, target, index);
-  const defaultOpen = index < 3;
-  const expanded = state.expandedTargets.has(key) || (defaultOpen && !state.collapsedTargets.has(key));
+  const expanded = state.expandedTargets.has(key);
   const title = [target.symbol, target.name].filter(Boolean).join(' · ') || `标的 ${index + 1}`;
   const description = target.description || target.industry || '暂无行业描述';
   const action = target.primary_action || 'watch';
@@ -1059,13 +1057,14 @@ function reportCardMarkup(report, selected) {
 
 function l0Markup() {
   const channel = activeChannel();
+  const isSlock = state.activeChannelId === '45271353210@chatroom';
   const selected = activeReport();
   const reportNote = state.reports.length === 1 ? '1 hourly brief' : `${state.reports.length} hourly briefs`;
   return `
     <section class="column l0 ${state.activeLayer === 'L0' ? 'active-layer' : ''}">
       <div class="column-head">
-        <div class="column-title"><b>L0</b> Action layer</div>
-        <h1>Investment actions</h1>
+        <div class="column-title"><b>L0</b> ${isSlock ? 'AI brief' : 'Action layer'}</div>
+        <h1>${isSlock ? 'AI 群聊摘要' : 'Investment actions'}</h1>
         <p>${escapeHtml(channel?.channel || 'selected channel')} · ${state.reports.length} loaded</p>
       </div>
       <div class="toolbar">
@@ -1160,7 +1159,6 @@ app.addEventListener('click', async (event) => {
     state.reportsError = '';
     state.selectedReportId = '';
     state.expandedTargets = new Set();
-    state.collapsedTargets = new Set();
     state.highlightedMessageId = '';
     await Promise.all([
       loadMessages({ reset: true }),
@@ -1214,9 +1212,7 @@ app.addEventListener('click', async (event) => {
     const expanded = target.dataset.expanded === 'true';
     if (expanded) {
       state.expandedTargets.delete(key);
-      state.collapsedTargets.add(key);
     } else {
-      state.collapsedTargets.delete(key);
       state.expandedTargets.add(key);
     }
     render();
